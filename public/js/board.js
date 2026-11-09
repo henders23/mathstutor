@@ -175,7 +175,7 @@ export class Board {
 
   resetView() {
     // Lessons are laid out for a ~1100px-wide board; shrink to fit smaller screens.
-    const scale = Math.max(0.55, Math.min(1, this.width / 1100));
+    const scale = Math.max(0.4, Math.min(1, this.width / 1100));
     this.view = { x: 0, y: 0, scale };
     this.onViewChange(this.view);
     this.requestRender();
@@ -235,6 +235,10 @@ export class Board {
       const decorated = item.underline || item.box || item.segments.some((s) => s.ring);
       return Math.max(350, chars * 32) + (decorated ? 450 : 0);
     }
+    if (item.kind === "fraction") {
+      const text = [{ text: item.prefix ?? "" }, ...item.num, ...item.den].reduce((n, s) => n + s.text.length, 0);
+      return Math.max(500, text * 34) + 250;
+    }
     if (item.kind === "badge") return 200;
     return 450;
   }
@@ -281,18 +285,56 @@ export class Board {
     requestAnimationFrame(tick);
   }
 
-  layoutLine(item) {
+  // Lays out text segments left to right. A segment with `root: true` gets room for a √ sign.
+  layoutSegments(segments, x0, size, weight = 400) {
     const ctx = this.ctx;
-    let x = item.x;
-    const parts = item.segments.map((segment) => {
-      ctx.font = fontFor(item.size, segment.weight ?? item.weight ?? 400);
-      const width = ctx.measureText(segment.text).width;
-      const part = { ...segment, x, width };
+    let x = x0;
+    const parts = segments.map((segment) => {
+      ctx.font = fontFor(size, segment.weight ?? weight);
+      const textWidth = ctx.measureText(segment.text).width;
+      const pad = segment.root ? size * 0.46 : 0;
+      const width = textWidth + pad + (segment.root ? size * 0.1 : 0);
+      const part = { ...segment, x, textX: x + pad, textWidth, width };
       x += width;
       return part;
     });
-    const width = x - item.x;
+    return { parts, width: x - x0 };
+  }
+
+  layoutLine(item) {
+    const { parts, width } = this.layoutSegments(item.segments, item.x, item.size, item.weight);
     return { parts, width, left: item.x, top: item.y, right: item.x + width, bottom: item.y + item.size * 1.15 };
+  }
+
+  // "x = numerator / denominator" with a drawn fraction bar.
+  layoutFraction(item) {
+    const s = item.size;
+    const weight = item.weight ?? 400;
+    const prefix = this.layoutSegments([{ text: `${item.prefix ?? ""} ` }], item.x, s, weight);
+    const barX = item.x + prefix.width + s * 0.1;
+    const numWidth = this.layoutSegments(item.num, 0, s, weight).width;
+    const denWidth = this.layoutSegments(item.den, 0, s, weight).width;
+    const barW = Math.max(numWidth, denWidth) + s * 0.5;
+    const barY = item.y + s * 1.25;
+    const num = this.layoutSegments(item.num, barX + (barW - numWidth) / 2, s, weight);
+    const den = this.layoutSegments(item.den, barX + (barW - denWidth) / 2, s, weight);
+    const width = barX + barW - item.x;
+    return {
+      prefixParts: prefix.parts,
+      numParts: num.parts,
+      denParts: den.parts,
+      barX,
+      barW,
+      barY,
+      prefixBase: barY + s * 0.33,
+      numBase: barY - s * 0.3,
+      denBase: barY + s * 1.0,
+      width,
+      left: item.x,
+      top: item.y,
+      right: item.x + width,
+      bottom: barY + s * 1.3,
+    };
   }
 
   itemBounds(item) {
@@ -300,6 +342,10 @@ export class Board {
       const box = this.layoutLine(item);
       const pad = item.box ? 14 : 0;
       return { left: box.left - pad, top: box.top - pad / 2, right: box.right + pad, bottom: box.bottom + pad / 2 };
+    }
+    if (item.kind === "fraction") {
+      const { left, top, right, bottom } = this.layoutFraction(item);
+      return { left, top, right, bottom };
     }
     if (item.kind === "badge") return { left: item.x - 14, top: item.y - 14, right: item.x + 14, bottom: item.y + 14 };
     if (item.kind === "mark") {
@@ -594,6 +640,7 @@ export class Board {
     ctx.lineWidth = item.lineWidth ?? 2.6;
 
     if (item.kind === "line") this.drawLine(item, p);
+    else if (item.kind === "fraction") this.drawFraction(item, p);
     else if (item.kind === "badge") {
       ctx.globalAlpha = Math.min(1, p * 1.5);
       ctx.beginPath();
@@ -641,19 +688,15 @@ export class Board {
     ctx.beginPath();
     ctx.rect(item.x - 4, item.y - item.size, layout.width * textP + 8, item.size * 3);
     ctx.clip();
-    ctx.textBaseline = "alphabetic";
+    this.drawParts(layout.parts, baseline, item);
     for (const part of layout.parts) {
-      ctx.font = fontFor(item.size, part.weight ?? item.weight ?? 400);
-      ctx.fillStyle = part.color ?? item.color;
-      ctx.fillText(part.text, part.x, baseline);
-      if (part.strike) {
-        ctx.strokeStyle = part.color ?? item.color;
-        ctx.lineWidth = 2.4;
-        ctx.beginPath();
-        ctx.moveTo(part.x - 2, item.y + item.size * 0.55);
-        ctx.lineTo(part.x + part.width + 2, item.y + item.size * 0.5);
-        ctx.stroke();
-      }
+      if (!part.strike) continue;
+      ctx.strokeStyle = part.color ?? item.color;
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.moveTo(part.x - 2, item.y + item.size * 0.55);
+      ctx.lineTo(part.x + part.width + 2, item.y + item.size * 0.5);
+      ctx.stroke();
     }
     ctx.restore();
 
@@ -672,6 +715,52 @@ export class Board {
       ctx.lineWidth = 2.6;
       drawPartialPath(ctx, boxPoints(item.x - 16, item.y - 8, layout.width + 32, item.size * 1.3 + 8), decoP);
     }
+  }
+
+  drawParts(parts, baseline, item) {
+    const ctx = this.ctx;
+    const size = item.size;
+    ctx.textBaseline = "alphabetic";
+    for (const part of parts) {
+      const color = part.color ?? item.color;
+      ctx.font = fontFor(size, part.weight ?? item.weight ?? 400);
+      ctx.fillStyle = color;
+      ctx.fillText(part.text, part.textX, baseline);
+      if (part.root) {
+        // Hand-drawn radical: small tick, down stroke, long up stroke, then the bar over the contents.
+        const x = part.x;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = Math.max(1.8, size * 0.075);
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        ctx.moveTo(x + size * 0.04, baseline - size * 0.3);
+        ctx.lineTo(x + size * 0.14, baseline - size * 0.37);
+        ctx.lineTo(x + size * 0.27, baseline + size * 0.06);
+        ctx.lineTo(x + size * 0.4, baseline - size * 0.86);
+        ctx.lineTo(part.textX + part.textWidth + size * 0.06, baseline - size * 0.88);
+        ctx.stroke();
+      }
+    }
+  }
+
+  drawFraction(item, p) {
+    const ctx = this.ctx;
+    const layout = this.layoutFraction(item);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(item.x - 4, item.y - item.size, layout.width * p + 8, item.size * 5);
+    ctx.clip();
+    this.drawParts(layout.prefixParts, layout.prefixBase, item);
+    this.drawParts(layout.numParts, layout.numBase, item);
+    this.drawParts(layout.denParts, layout.denBase, item);
+    ctx.strokeStyle = item.color;
+    ctx.lineWidth = Math.max(2, item.size * 0.08);
+    ctx.beginPath();
+    ctx.moveTo(layout.barX, layout.barY + 1);
+    ctx.quadraticCurveTo(layout.barX + layout.barW / 2, layout.barY - 2, layout.barX + layout.barW, layout.barY);
+    ctx.stroke();
+    ctx.restore();
   }
 
   // ---------- export for Claude ----------

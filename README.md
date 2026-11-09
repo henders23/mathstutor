@@ -1,12 +1,19 @@
 # Maths Tutor
 
-A whiteboard-first maths tutor. The first lesson is **solving quadratic equations by factorising**:
+A whiteboard-first maths tutor. Each lesson works the same way:
 
-1. **Learn** – the tutor writes a worked example (x² + 5x + 6 = 0) on the board one step at a time, with a short explanation and a "key idea" for each step. You can go back, replay or have it read aloud.
+1. **Learn** – the tutor writes a worked example on the board one step at a time, with a short explanation and a "key idea" for each step. You can go back, replay or have it read aloud.
 2. **Try it** – you get a question and work it out by hand on the board (stylus, finger or mouse). Press **Check my work** and Claude reads your handwriting, marks it on the board (ticks, underlines, short notes beside the right line) and nudges you towards any mistake without giving the answer away.
 3. **Hints and next steps** – up to three hints per question, each more specific than the last, and **Show next step** writes the next line of the solution for you.
 
-There are five practice questions, which get gradually trickier with the signs.
+### Lessons (Quadratic equations)
+
+| # | Lesson | Demo | Practice |
+| --- | --- | --- | --- |
+| 1 | Solving by factorising | x² + 5x + 6 = 0 | Five x² + bx + c questions that get gradually trickier with the signs |
+| 2 | The quadratic formula | 2x² + 3x − 4 = 0, answers to 2 d.p. | Five questions, mostly with a ≠ 1 and answers to 2 decimal places (calculator allowed) |
+
+Pick a lesson from the menu in the top bar. Finishing a lesson's practice set also offers the next lesson.
 
 ## Running it
 
@@ -59,7 +66,11 @@ public/styles.css    Styles
 public/js/app.js     Lesson flow: demo, practice, hints, feedback on the board
 public/js/board.js   The whiteboard: strokes, pan/zoom, animated tutor writing, image export
 public/js/rows.js    Groups strokes into lines of working
-public/js/lesson.js  Lesson content and maths helpers (shared by browser, server and tests)
+public/js/lessons/   Lesson content (shared by browser, server and tests)
+  common.js          Maths and formatting helpers
+  factorising.js     Lesson 1
+  formula.js         Lesson 2
+  index.js           The lesson catalogue, in teaching order
 test/                node --test suites
 ```
 
@@ -73,7 +84,10 @@ The tests cover the lesson maths, line detection, the Claude request and respons
 
 ## Adding lessons
 
-Lesson content lives in `public/js/lesson.js`:
+Each lesson is one file in `public/js/lessons/` that exports a lesson object. Add it to `LESSONS` in `index.js`. A lesson provides:
 
-- **Demo:** `DEMO_STEPS` is a list of steps. Each step has a title, narration, a key idea and the board items to write.
-- **Practice questions:** `PRACTICE` lists x² + bx + c questions by their `b` and `c` values. The worked solution, scripted hints and answers are all generated from those two numbers.
+- **Method:** `methodSteps`, the five step names used for the checklist and the tutor's steps.
+- **Demo:** `demo` holds an intro, the title and five steps, each with narration, a key idea and board items. Board items can be text lines or fractions; a text segment with `root: true` gets a hand-drawn √ sign. Set `autoLayout: true` to stack the items automatically, or give items an `x`/`y` to place them yourself.
+- **Practice questions:** `practice` lists the questions with `a`, `b`, `c` and a unique `id`.
+- **Per question:** `solutionSteps(problem)` gives the worked lines, both as board items and as text for Claude. `hints(problem)` gives three escalating hints. `answers(problem)` and `checkAnswer(problem, values)` handle typed-answer mode.
+- **For Claude:** `referenceText(problem)` is the answer key. `gradingNotes` says what to accept and what not to give away.

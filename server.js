@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import Anthropic from "@anthropic-ai/sdk";
 import { createTutor, DEFAULT_EFFORT, DEFAULT_MODEL, TutorError } from "./src/tutor.js";
-import { findProblem } from "./public/js/lesson.js";
+import { findProblem } from "./public/js/lessons/index.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(here, "public");
@@ -68,7 +68,7 @@ export function parseFeedbackRequest(body) {
     throw new TutorError("bad_request", "Request body must be JSON.", 400);
   }
   const problem = findProblem(data?.problemId);
-  if (!problem || problem.id === "demo") throw new TutorError("bad_request", "Unknown practice question.", 400);
+  if (!problem || problem.demo) throw new TutorError("bad_request", "Unknown practice question.", 400);
   if (typeof data.image !== "string" || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(data.image))
     throw new TutorError("bad_request", "Expected a PNG image of the board.", 400);
   if (data.image.length > MAX_IMAGE_CHARS) throw new TutorError("too_large", "That board image is too large.", 413);

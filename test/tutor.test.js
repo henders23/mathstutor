@@ -4,7 +4,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { FEEDBACK_SCHEMA, buildRequestText, createTutor, sanitizeFeedback, TutorError } from "../src/tutor.js";
 
 const PNG = "data:image/png;base64,iVBORw0KGgo=";
-const problem = { id: "p1", b: -1, c: -12 };
+const problem = { id: "p1", lessonId: "factorising", a: 1, b: -1, c: -12 };
+const formulaProblem = { id: "f2", lessonId: "formula", a: 2, b: -5, c: 1 };
 
 function fakeClient(reply) {
   const calls = [];
@@ -52,6 +53,8 @@ test("sends the image, schema and lesson context to Claude", async () => {
   assert.match(text.text, /x² - x - 12 = 0/);
   assert.match(text.text, /R1–R2/);
   assert.match(text.text, /Check my work/);
+  assert.match(text.text, /Lesson: Solving by factorising/);
+  assert.match(text.text, /Factor pair -4 and 3/);
 
   assert.equal(feedback.verdict, "mistake");
   assert.equal(feedback.mistakeRow, 2);
@@ -62,6 +65,15 @@ test("hint requests carry the level and previous hints", () => {
   const text = buildRequestText({ problem, mode: "hint", hintLevel: 2, rowCount: 1, previousHints: ["Read off a, b, c."] });
   assert.match(text, /Level 2/);
   assert.match(text, /Read off a, b, c\./);
+});
+
+test("formula questions tell Claude the method, the 2 d.p. answers and what to accept", () => {
+  const text = buildRequestText({ problem: formulaProblem, mode: "check", rowCount: 3 });
+  assert.match(text, /Lesson: The quadratic formula/);
+  assert.match(text, /2x² - 5x \+ 1 = 0 \(Give your answers to 2 decimal places\.\)/);
+  assert.match(text, /b² - 4ac = 17/);
+  assert.match(text, /x = 2\.28 and x = 0\.22/);
+  assert.match(text, /exact form/);
 });
 
 test("sanitising drops out-of-range rows, duplicates and unknown enums", () => {

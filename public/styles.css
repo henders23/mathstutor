@@ -68,6 +68,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid #8fb1f0; outline-
   font-size: 14px;
   font-weight: 500;
   color: var(--muted);
+  white-space: nowrap;
   cursor: pointer;
 }
 .tab[aria-pressed="true"] { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.12); }
@@ -284,7 +285,11 @@ button:focus-visible, input:focus-visible { outline: 3px solid #8fb1f0; outline-
 /* ---------- smaller screens ---------- */
 
 @media (max-width: 980px) {
-  .crumbs { display: none; }
+  .crumbs .topic { display: none; }
+}
+
+@media (max-width: 520px) {
+  .progress-label, .brand { display: none; }
 }
 
 @media (max-width: 760px) {
@@ -314,4 +319,77 @@ button:focus-visible, input:focus-visible { outline: 3px solid #8fb1f0; outline-
 @media (max-width: 760px) {
   /* Keep the tool rail above the tutor sheet; scroll it if the screen is short. */
   .toolrail { max-height: calc(58% - 108px); overflow-y: auto; }
+}
+
+/* ---------- lesson picker ---------- */
+
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.lesson-picker { position: relative; }
+.lesson-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 10px;
+  margin-left: -10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  font-size: 14px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.lesson-btn strong { font-weight: 600; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lesson-btn:hover, .lesson-btn[aria-expanded="true"] { background: var(--surface-muted); }
+.lesson-menu {
+  position: absolute;
+  left: -10px;
+  top: 50px;
+  width: 320px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 10;
+}
+.lesson-option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  font-size: 15px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.lesson-option:hover { background: var(--surface-muted); }
+.lesson-option[aria-current="true"] { background: var(--tutor-tint); }
+.lesson-num {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1.5px solid #9db6e8;
+  color: var(--tutor);
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.lesson-option[aria-current="true"] .lesson-num { background: var(--tutor); border-color: var(--tutor); color: #fff; }
+.lesson-name { flex: 1; font-weight: 600; }
+.lesson-progress { font-size: 12px; color: var(--muted); white-space: nowrap; }
+
+@media (max-width: 760px) {
+  .lesson-btn strong { max-width: 120px; }
+  .lesson-menu { width: min(320px, calc(100vw - 24px)); }
 }

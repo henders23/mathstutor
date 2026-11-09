@@ -1,18 +1,8 @@
 // App controller: the Learn (demo) and Try it (practice) flows around the whiteboard.
 
 import { Board } from "./board.js";
-import {
-  DEMO_STEPS,
-  DEMO_TITLE,
-  INK,
-  METHOD_STEPS,
-  PRACTICE,
-  checkTypedAnswer,
-  practiceTitle,
-  roots,
-  scriptedHints,
-  solutionLines,
-} from "./lesson.js";
+import { INK, LESSONS } from "./lessons/index.js";
+import { LEFT } from "./lessons/common.js";
 
 // ---------- tiny DOM helpers (text always goes in via textContent) ----------
 
@@ -90,6 +80,7 @@ const pretty = (s) => s.replace(/(^|[\s(=])-(\d)/g, "$1−$2"); // nicer minus s
 // ---------- state ----------
 
 const state = {
+  lesson: LESSONS[0],
   mode: "learn",
   ai: false,
   demoStep: 0,
@@ -116,7 +107,8 @@ try {
 const board = new Board($("board"), { onInk: updateToolButtons });
 window.mathsTutorBoard = board; // handy for debugging in the console
 
-const problem = () => PRACTICE[state.index];
+const lesson = () => state.lesson;
+const problem = () => lesson().practice[state.index];
 
 // ---------- tutor card ----------
 
@@ -152,7 +144,7 @@ function checklist() {
     "ul",
     { class: "checklist", "aria-label": "Steps from the demo" },
     h("li", { class: "checklist-title" }, "Steps from the demo"),
-    METHOD_STEPS.map((label, i) => {
+    lesson().methodSteps.map((label, i) => {
       const done = i < state.stepReached;
       const now = i === state.stepReached;
       return h(
@@ -182,13 +174,6 @@ function dots(count, isOn, isCurrent = () => false, label) {
 
 // ---------- Learn mode ----------
 
-const DEMO_INTRO = {
-  title: "Let's solve a quadratic",
-  narration:
-    "I'll work through x² + 5x + 6 = 0 on the board, one step at a time. Watch how each line follows from the one before. Press Next step to begin.",
-  keyIdea: "Solving means finding the values of x that make the equation true.",
-};
-
 async function enterLearn() {
   state.mode = "learn";
   state.demoStep = 0;
@@ -201,29 +186,31 @@ async function enterLearn() {
   board.resetView();
   board.setColor(INK.student);
   selectColor(INK.student);
+  renderLessonPicker();
   renderLearn();
-  await board.addItem(DEMO_TITLE);
+  await board.addItem(lesson().demo.title);
 }
 
 function renderLearn() {
   const step = state.demoStep;
-  const info = step === 0 ? DEMO_INTRO : DEMO_STEPS[step - 1];
-  $("progressLabel").textContent = step === 0 ? "Demo" : `Step ${step} of ${DEMO_STEPS.length}`;
+  const steps = lesson().demo.steps;
+  const info = step === 0 ? lesson().demo.intro : steps[step - 1];
+  $("progressLabel").textContent = step === 0 ? "Demo" : `Step ${step} of ${steps.length}`;
   setTutor({
-    status: step === 0 ? "Demo · watch the method" : `Demo · step ${step} of ${DEMO_STEPS.length}`,
+    status: step === 0 ? "Demo · watch the method" : `Demo · step ${step} of ${steps.length}`,
     speech: `${info.title}. ${info.narration}`,
     body: [
       h("h2", {}, info.title),
       h("p", {}, info.narration),
       callout("Key idea", info.keyIdea),
-      step === DEMO_STEPS.length &&
+      step === steps.length &&
         h("p", {}, "That's the whole method. Now it's your turn — I'll watch your working and help if you get stuck."),
     ],
   });
-  const atEnd = step === DEMO_STEPS.length;
+  const atEnd = step === steps.length;
   setDock([
     button("Back", demoBack, { iconName: "left", disabled: step === 0 || state.demoBusy }),
-    dots(DEMO_STEPS.length, (i) => (i < step ? "on" : ""), () => false, `Step ${step} of ${DEMO_STEPS.length}`),
+    dots(steps.length, (i) => (i < step ? "on" : ""), () => false, `Step ${step} of ${steps.length}`),
     atEnd
       ? button("Try one yourself", () => enterPractice(state.index), { kind: "primary", iconAfter: "arrow" })
       : button(step === 0 ? "Start" : "Next step", demoNext, { kind: "primary", iconAfter: "right", disabled: state.demoBusy }),
@@ -243,12 +230,16 @@ function markActiveBadge() {
 }
 
 async function demoNext() {
-  if (state.demoBusy || state.demoStep >= DEMO_STEPS.length) return;
+  const steps = lesson().demo.steps;
+  if (state.demoBusy || state.demoStep >= steps.length) return;
   state.demoStep += 1;
   state.demoBusy = true;
   const step = state.demoStep;
   renderLearn();
-  const writes = DEMO_STEPS[step - 1].items.map((item) => board.addItem({ ...item, demoStep: step }));
+  const demoStep = steps[step - 1];
+  const writes = lesson().demo.autoLayout
+    ? writeBelow(demoStep.items, { label: String(step), gap: 14, tag: { demoStep: step } })
+    : demoStep.items.map((item) => board.addItem({ ...item, demoStep: step }));
   markActiveBadge();
   await Promise.all(writes);
   if (state.mode !== "learn" || state.demoStep !== step) return;
@@ -290,11 +281,12 @@ async function enterPractice(index) {
   selectColor(INK.student);
   showIntro();
   renderPracticeDock();
-  await board.addItem(practiceTitle(problem()));
+  renderLessonPicker();
+  await board.addItem(lesson().practiceTitle(problem()));
 }
 
 function practiceStatus() {
-  return `Question ${state.index + 1} of ${PRACTICE.length}`;
+  return `Question ${state.index + 1} of ${lesson().practice.length}`;
 }
 
 function showIntro(lead) {
@@ -308,8 +300,7 @@ function showIntro(lead) {
       h(
         "p",
         {},
-        lead ??
-          "Use the same five steps as the demo and write each one underneath the last. Press Check my work whenever you like — I'll read your handwriting and tell you how it's going.",
+        lead ?? lesson().practiceIntro,
       ),
       !state.ai &&
         first &&
@@ -388,6 +379,13 @@ async function checkWork() {
   }
 }
 
+// Pre-written hint for this level, skipping ahead past steps the student already has.
+function scriptedHint(level) {
+  const progress = Math.max(state.stepReached, state.shownSteps);
+  const index = Math.min(2, Math.max(level - 1, progress >= 3 ? 2 : progress >= 2 ? 1 : 0));
+  return lesson().hints(problem())[index];
+}
+
 async function requestHint() {
   if (state.busy || state.hintsUsed >= 3) return;
   state.hintsUsed += 1;
@@ -404,12 +402,12 @@ async function requestHint() {
       if (feedback.annotations.length) await drawAnnotations(feedback, rows);
       showHint(level, feedback.message, feedback.question, feedback.headline);
     } catch (error) {
-      showHint(level, scriptedHints(problem())[level - 1]);
+      showHint(level, scriptedHint(level));
     } finally {
       if (state.mode === "practice") setBusy(false);
     }
   } else {
-    const hint = scriptedHints(problem())[level - 1];
+    const hint = scriptedHint(level);
     state.hints.push(hint);
     showHint(level, hint);
     renderPracticeDock();
@@ -447,7 +445,7 @@ async function showFeedback(feedback, rows) {
     feedback.question && h("p", { class: "question" }, pretty(feedback.question)),
   ];
   if (feedback.verdict === "mistake")
-    body.push(callout("Tip", "Check your pair against both rules: multiply to c and add to b. Then fix the line and check again.", "fix"));
+    body.push(callout("Tip", lesson().mistakeTip, "fix"));
   body.push(
     h(
       "div",
@@ -466,14 +464,17 @@ async function showFeedback(feedback, rows) {
 }
 
 function rootsText() {
-  const [r1, r2] = roots(problem());
-  return r1 === r2 ? `x = ${r1}` : `x = ${r1} or x = ${r2}`;
+  return lesson()
+    .answers(problem())
+    .map((r) => `x = ${r}`)
+    .join(" or ");
 }
 
 function showSolved(message) {
   state.solved.add(problem().id);
   state.stepReached = 5;
-  const last = state.index === PRACTICE.length - 1;
+  const last = state.index === lesson().practice.length - 1;
+  const nextLesson = LESSONS[LESSONS.indexOf(lesson()) + 1];
   state.complete = true;
   const helped = state.hintsUsed + state.stepsShown;
   setTutor({
@@ -487,7 +488,7 @@ function showSolved(message) {
         "div",
         { class: "callout neutral" },
         h("span", { class: "callout-label" }, "What you used"),
-        ["Factor pairs: multiply to c, add to b", "Zero-product rule", "Checking by substitution"].map((t) =>
+        lesson().recap.map((t) =>
           h("div", { class: "recap-row" }, icon("check", 18, INK.good, 2.4), t),
         ),
         h(
@@ -497,18 +498,21 @@ function showSolved(message) {
           helped === 0 ? "No hints needed" : helpSummary(),
         ),
       ),
-      last
-        ? h("p", {}, "That's the whole practice set done. Brilliant work!")
-        : button("Next question", () => enterPractice(state.index + 1), { kind: "primary big", iconAfter: "arrow" }),
+      last && h("p", {}, "That's the whole practice set done. Brilliant work!"),
+      !last && button("Next question", () => enterPractice(state.index + 1), { kind: "primary big", iconAfter: "arrow" }),
+      last &&
+        nextLesson &&
+        button(`Next lesson: ${nextLesson.title}`, () => switchLesson(nextLesson), { kind: "primary big", iconAfter: "arrow" }),
       h(
         "div",
         { class: "row-buttons" },
-        last && button("Start the set again", () => enterPractice(0), { kind: "primary" }),
+        last && button("Start the set again", () => enterPractice(0), { kind: nextLesson ? "" : "primary" }),
         button("Replay the demo", enterLearn),
       ),
     ],
   });
   renderSolvedDock();
+  renderLessonPicker();
   $("progressLabel").textContent = practiceStatus();
 }
 
@@ -519,16 +523,20 @@ function helpSummary() {
   return parts.join(", ");
 }
 
+function solvedCount(l = lesson()) {
+  return l.practice.filter((p) => state.solved.has(p.id)).length;
+}
+
 function renderSolvedDock() {
   setDock([
     h("span", { class: "dock-label" }, "Practice set"),
     dots(
-      PRACTICE.length,
-      (i) => (state.solved.has(PRACTICE[i].id) ? "done" : ""),
+      lesson().practice.length,
+      (i) => (state.solved.has(lesson().practice[i].id) ? "done" : ""),
       (i) => i === state.index,
-      `${state.solved.size} of ${PRACTICE.length} solved`,
+      `${solvedCount()} of ${lesson().practice.length} solved`,
     ),
-    h("span", { class: "progress-label" }, `${state.solved.size} of ${PRACTICE.length} done`),
+    h("span", { class: "progress-label" }, `${solvedCount()} of ${lesson().practice.length} done`),
   ]);
 }
 
@@ -553,11 +561,11 @@ function showError(error) {
 }
 
 function showTypedAnswer(note) {
-  const first = h("input", { id: "ans1", inputmode: "numeric", autocomplete: "off", "aria-label": "First solution" });
-  const second = h("input", { id: "ans2", inputmode: "numeric", autocomplete: "off", "aria-label": "Second solution" });
+  const first = h("input", { id: "ans1", inputmode: "decimal", autocomplete: "off", "aria-label": "First solution" });
+  const second = h("input", { id: "ans2", inputmode: "decimal", autocomplete: "off", "aria-label": "Second solution" });
   const submit = (e) => {
     e.preventDefault();
-    const result = checkTypedAnswer(problem(), [first.value, second.value]);
+    const result = lesson().checkAnswer(problem(), [first.value, second.value]);
     if (result.correct) {
       state.stepReached = 5;
       return showSolved("You found both solutions.");
@@ -567,7 +575,9 @@ function showTypedAnswer(note) {
         ? "Quadratics usually have two answers — fill in both."
         : result.reason === "not-a-number"
           ? "Type just the number for each answer, like -3."
-          : "Not quite. Substitute your answers back into the equation to check them, or ask for a hint.",
+          : lesson().answerDp
+            ? `Not quite. Check your signs and that you divided the whole top line by 2a, then round to ${lesson().answerDp} decimal places.`
+            : "Not quite. Substitute your answers back into the equation to check them, or ask for a hint.",
     );
   };
   setTutor({
@@ -576,7 +586,7 @@ function showTypedAnswer(note) {
     speech: note ?? "Type your two solutions.",
     body: [
       h("h2", {}, "Type your answers"),
-      h("p", {}, note ?? "What values of x did you get? Type each solution."),
+      h("p", {}, note ?? `What values of x did you get? Type each solution.${lesson().answerNote ? ` ${lesson().answerNote}` : ""}`),
       h(
         "form",
         { class: "answer-form", onsubmit: submit },
@@ -596,13 +606,13 @@ async function showNextStep() {
   state.shownSteps = index + 1;
   state.stepsShown += 1;
   renderPracticeDock();
-  const line = solutionLines(problem())[index];
-  const y = Math.max(140, board.contentBottom() + 28);
+  const step = lesson().solutionSteps(problem())[index];
+  const label = lesson().methodSteps[index];
   setTutor({
     status: `Step ${index + 1} of 5 shown`,
-    speech: `Step ${index + 1}: ${METHOD_STEPS[index]}. ${pretty(line)}`,
+    speech: `Step ${index + 1}: ${label}. ${pretty(step.text)}`,
     body: [
-      h("h2", {}, `Step ${index + 1}: ${METHOD_STEPS[index]}`),
+      h("h2", {}, `Step ${index + 1}: ${label}`),
       h(
         "p",
         {},
@@ -613,13 +623,82 @@ async function showNextStep() {
       checklist(),
     ],
   });
-  await board.addItem({ kind: "badge", x: 108, y: y + 14, label: String(index + 1) });
-  await board.addItem({ kind: "line", x: 140, y, size: 32, color: INK.tutor, segments: [{ text: line }] });
+  await Promise.all(writeBelow(step.items, { label: String(index + 1), gap: 24 }));
   if (index === 4) {
     state.stepReached = 5;
     renderPracticeDock();
   }
 }
+
+// Writes tutor items one under another, below everything already on the board,
+// with a numbered badge beside the first. Returns the write promises.
+function writeBelow(items, { label, gap = 20, tag = {} }) {
+  let y = Math.max(130, board.contentBottom() + gap);
+  const writes = [];
+  items.forEach((item, i) => {
+    const placed = { ...item, x: item.x ?? LEFT, y: item.y ?? y, ...tag };
+    if (i === 0 && label) {
+      const bounds = board.itemBounds(placed);
+      writes.push(board.addItem({ kind: "badge", x: 108, y: (bounds.top + bounds.bottom) / 2, label, ...tag }));
+    }
+    writes.push(board.addItem(placed));
+    y = board.itemBounds(placed).bottom + gap;
+  });
+  return writes;
+}
+
+// ---------- lessons ----------
+
+function switchLesson(next) {
+  state.lesson = next;
+  state.index = 0;
+  closeLessonMenu();
+  enterLearn();
+}
+
+function renderLessonPicker() {
+  $("lessonTitle").textContent = lesson().title;
+  const menu = $("lessonMenu");
+  menu.replaceChildren(
+    ...LESSONS.map((l, i) => {
+      const done = solvedCount(l);
+      return h(
+        "button",
+        {
+          type: "button",
+          class: "lesson-option",
+          role: "menuitem",
+          "aria-current": l === lesson() ? "true" : null,
+          onclick: () => (l === lesson() ? closeLessonMenu() : switchLesson(l)),
+        },
+        h("span", { class: "lesson-num" }, String(i + 1)),
+        h("span", { class: "lesson-name" }, l.title),
+        h("span", { class: "lesson-progress" }, done ? `${done}/${l.practice.length} solved` : ""),
+      );
+    }),
+  );
+}
+
+function closeLessonMenu() {
+  $("lessonMenu").hidden = true;
+  $("lessonBtn").setAttribute("aria-expanded", "false");
+}
+
+$("lessonBtn").addEventListener("click", () => {
+  const open = $("lessonMenu").hidden;
+  renderLessonPicker();
+  $("lessonMenu").hidden = !open;
+  $("lessonBtn").setAttribute("aria-expanded", String(open));
+});
+document.addEventListener("pointerdown", (e) => {
+  if (!$("lessonMenu").hidden && !e.target.closest(".lesson-picker")) closeLessonMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("lessonMenu").hidden) {
+    closeLessonMenu();
+    $("lessonBtn").focus();
+  }
+});
 
 // Draws Claude's marks beside the rows it refers to.
 async function drawAnnotations(feedback, rows) {

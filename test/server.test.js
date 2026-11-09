@@ -55,7 +55,7 @@ test("static files are served and path traversal is refused", async () => {
     assert.equal(page.status, 200);
     assert.match(page.headers.get("content-security-policy"), /default-src 'self'/);
     assert.match(await page.text(), /Maths Tutor/);
-    const js = await fetch(`${base}/js/lesson.js`);
+    const js = await fetch(`${base}/js/lessons/index.js`);
     assert.match(js.headers.get("content-type"), /javascript/);
     assert.notEqual((await fetch(`${base}/..%2Fserver.js`)).status, 200);
     assert.notEqual((await fetch(`${base}/..%2F.env`)).status, 200);
@@ -65,9 +65,11 @@ test("static files are served and path traversal is refused", async () => {
 test("request validation", () => {
   const ok = { problemId: "p1", mode: "check", image: PNG, rowCount: 2 };
   assert.equal(parseFeedbackRequest(JSON.stringify(ok)).problem.id, "p1");
+  assert.equal(parseFeedbackRequest(JSON.stringify({ ...ok, problemId: "f3" })).problem.lessonId, "formula");
   const bad = [
     "not json",
-    { ...ok, problemId: "demo" },
+    { ...ok, problemId: "demo-factorising" },
+    { ...ok, problemId: "demo-formula" },
     { ...ok, problemId: "nope" },
     { ...ok, image: "data:image/jpeg;base64,abc" },
     { ...ok, image: "data:image/png;base64,<script>" },

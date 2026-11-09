@@ -4,7 +4,8 @@
 // and annotations tied to row numbers that the board draws next to the working.
 
 import Anthropic from "@anthropic-ai/sdk";
-import { METHOD_STEPS, equationText, factorPair, roots, solutionLines } from "../public/js/lesson.js";
+import { findLesson } from "../public/js/lessons/index.js";
+import { equationText } from "../public/js/lessons/common.js";
 
 export const DEFAULT_MODEL = "claude-opus-5-5";
 export const DEFAULT_EFFORT = "low";
@@ -60,7 +61,7 @@ export const FEEDBACK_SCHEMA = {
   },
 };
 
-export const SYSTEM_PROMPT = `You are a patient, encouraging maths tutor working at a whiteboard with a secondary-school student (roughly age 13–16, UK). The student is learning to solve quadratic equations by factorising and is writing their working by hand.
+export const SYSTEM_PROMPT = `You are a patient, encouraging maths tutor working at a whiteboard with a secondary-school student (roughly age 13–16, UK). The student is learning to solve quadratic equations and is writing their working by hand. Each request says which method today's lesson teaches.
 
 You will see an image of the student's handwriting. The app has labelled each line of working R1, R2, … in grey in the left margin; the student did not write those labels. Use the row numbers to refer to lines.
 
@@ -69,23 +70,26 @@ How to respond:
 - Judge the maths, not neatness or notation. Accept equivalent forms: brackets in either order, answers in any order, ×, * or no sign for multiplication, "x=4, x=-3" or "x = 4 or -3".
 - Students may skip or merge steps; that's fine if the maths is right. Don't demand the exact layout of the method.
 - If there is a mistake, point at the first one only. Say what is right before what is wrong, and help them see the problem themselves (for example by asking them to check a sum or a sign) rather than correcting it for them.
-- Never reveal the factor pair or the final answers unless the student has already written them correctly, or the request is a level-3 hint.
+- Don't give away the key intermediate values or the final answers (the lesson notes say which); help the student get there.
 - Keep it short and warm. Plain words, short sentences, UK English. Celebrate genuine progress without gushing.
 - Board notes sit next to a row in handwriting, so keep each under 40 characters, plain-text maths only (x², -3 × 4), no LaTeX. Use tone "good" for ticks and praise, "fix" for something to correct, "info" for neutral pointers.`;
 
 const HINT_GUIDE = {
   1: "Level 1: a gentle nudge — a question about what to think about or check next.",
   2: "Level 2: a more specific pointer — which rule to use, or which numbers or sign to look at.",
-  3: "Level 3: show them the next step explicitly (you may now reveal the factor pair), then let them finish.",
+  3: "Level 3: show them the next step explicitly (you may now reveal the key intermediate value), then let them finish.",
 };
 
 export function buildRequestText({ problem, mode, hintLevel, rowCount, previousHints = [] }) {
-  const pair = factorPair(problem.b, problem.c);
+  const lesson = findLesson(problem.lessonId);
+  const steps = lesson.solutionSteps(problem);
   const lines = [
-    `The equation: ${equationText(problem)}`,
-    `For your reference only (don't reveal unless allowed): factor pair ${pair.p} and ${pair.q}; solutions x = ${roots(problem).join(" and x = ")}.`,
-    `A model solution, one line per method step:`,
-    ...solutionLines(problem).map((line, i) => `  ${i + 1}. ${METHOD_STEPS[i]}: ${line}`),
+    `Lesson: ${lesson.title}.`,
+    `The equation: ${equationText(problem)}${lesson.answerNote ? ` (${lesson.answerNote})` : ""}`,
+    `For your reference only: ${lesson.referenceText(problem)}`,
+    "A model solution, one line per method step:",
+    ...steps.map((step, i) => `  ${i + 1}. ${lesson.methodSteps[i]}: ${step.text}`),
+    `Lesson notes: ${lesson.gradingNotes}`,
     "",
     rowCount > 0
       ? `The image shows ${rowCount} labelled row${rowCount === 1 ? "" : "s"} of the student's working (R1–R${rowCount}).`

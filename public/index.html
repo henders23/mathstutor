@@ -18,9 +18,15 @@
       <span>Maths Tutor</span>
     </div>
     <nav class="crumbs" aria-label="Lesson">
-      <span>Quadratic equations</span>
-      <span aria-hidden="true">›</span>
-      <strong>Solving by factorising</strong>
+      <span class="topic">Quadratic equations</span>
+      <span class="topic" aria-hidden="true">›</span>
+      <div class="lesson-picker">
+        <button type="button" class="lesson-btn" id="lessonBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="lessonMenu">
+          <span class="visually-hidden">Lesson: </span><strong id="lessonTitle">Solving by factorising</strong>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"></path></svg>
+        </button>
+        <div class="lesson-menu" id="lessonMenu" role="menu" aria-label="Choose a lesson" hidden></div>
+      </div>
     </nav>
     <div class="spacer"></div>
     <div class="tabs" role="group" aria-label="Mode">
