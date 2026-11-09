@@ -1,0 +1,773 @@
+// The whiteboard: an infinite, pannable, zoomable canvas holding
+//  - the student's ink (vector strokes with pressure), and
+//  - the tutor's writing (text lines and hand-drawn marks, animated as if written).
+// Everything is stored as vectors in board coordinates, so the board can be
+// re-rendered at any zoom and exported as a crisp image for Claude.
+
+import { segmentRows } from "./rows.js";
+
+export const HAND_FONT = "Kalam, 'Segoe Print', 'Comic Sans MS', cursive";
+const BG = "#FCFCFA";
+const GRID = "#EDEFF2";
+const GRID_SPACING = 32;
+const ERASE_RADIUS = 12;
+
+let idCounter = 1;
+const nextId = () => idCounter++;
+
+// Deterministic jitter so hand-drawn shapes look natural but don't wobble between frames.
+function seeded(seed) {
+  let s = seed * 9301 + 49297;
+  return () => {
+    s = (s * 9301 + 49297) % 233280;
+    return s / 233280 - 0.5;
+  };
+}
+
+function fontFor(size, weight = 400) {
+  return `${weight} ${size}px ${HAND_FONT}`;
+}
+
+function pathLength(points) {
+  let total = 0;
+  for (let i = 1; i < points.length; i++) total += Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
+  return total;
+}
+
+function drawPartialPath(ctx, points, fraction) {
+  if (points.length < 2 || fraction <= 0) return;
+  const target = pathLength(points) * Math.min(fraction, 1);
+  let walked = 0;
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1];
+    const b = points[i];
+    const seg = Math.hypot(b.x - a.x, b.y - a.y);
+    if (walked + seg >= target) {
+      const t = seg === 0 ? 0 : (target - walked) / seg;
+      ctx.lineTo(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+      break;
+    }
+    ctx.lineTo(b.x, b.y);
+    walked += seg;
+  }
+  ctx.stroke();
+}
+
+function ellipsePoints(cx, cy, rx, ry, seed) {
+  const rand = seeded(seed);
+  const points = [];
+  const start = -2.2;
+  const sweep = Math.PI * 2 + 0.35; // overshoot slightly, like a real pen loop
+  for (let i = 0; i <= 48; i++) {
+    const t = start + (sweep * i) / 48;
+    const wobble = 1 + rand() * 0.04;
+    points.push({ x: cx + Math.cos(t) * rx * wobble, y: cy + Math.sin(t) * ry * wobble });
+  }
+  return points;
+}
+
+function wavyPoints(x, y, w) {
+  const points = [];
+  for (let i = 0; i <= Math.max(8, Math.round(w / 6)); i++) {
+    const px = x + (w * i) / Math.max(8, Math.round(w / 6));
+    points.push({ x: px, y: y + Math.sin(px / 7) * 3.2 });
+  }
+  return points;
+}
+
+function underlinePoints(x, y, w) {
+  return [
+    { x: x + 2, y: y + 3 },
+    { x: x + w * 0.3, y: y - 2 },
+    { x: x + w * 0.7, y: y + 2 },
+    { x: x + w, y: y - 3 },
+  ];
+}
+
+function tickPoints(x, y, s) {
+  return [
+    { x: x - s * 0.5, y: y },
+    { x: x - s * 0.12, y: y + s * 0.42 },
+    { x: x + s * 0.6, y: y - s * 0.55 },
+  ];
+}
+
+function crossStrokes(x, y, s) {
+  return [
+    [
+      { x: x - s * 0.45, y: y - s * 0.45 },
+      { x: x + s * 0.45, y: y + s * 0.45 },
+    ],
+    [
+      { x: x + s * 0.45, y: y - s * 0.45 },
+      { x: x - s * 0.45, y: y + s * 0.45 },
+    ],
+  ];
+}
+
+function boxPoints(x, y, w, h) {
+  const r = 12;
+  const points = [];
+  const corner = (cx, cy, a0) => {
+    for (let i = 0; i <= 6; i++) {
+      const a = a0 + (Math.PI / 2) * (i / 6);
+      points.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r });
+    }
+  };
+  corner(x + w - r, y + r, -Math.PI / 2);
+  corner(x + w - r, y + h - r, 0);
+  corner(x + r, y + h - r, Math.PI / 2);
+  corner(x + r, y + r, Math.PI);
+  points.push({ ...points[0] });
+  return points;
+}
+
+export class Board {
+  constructor(canvas, { onInk = () => {}, onViewChange = () => {} } = {}) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    this.onInk = onInk;
+    this.onViewChange = onViewChange;
+    this.view = { x: 0, y: 0, scale: 1 };
+    this.items = [];
+    this.strokes = [];
+    this.undoStack = [];
+    this.redoStack = [];
+    this.tool = "pen";
+    this.color = "#23262E";
+    this.penWidth = 3.2;
+    this.pointers = new Map();
+    this.penSeen = false;
+    this.live = null;
+    this.gesture = null;
+    this.spaceDown = false;
+    this.animating = false;
+    this.frameRequested = false;
+
+    canvas.style.touchAction = "none";
+    canvas.addEventListener("pointerdown", (e) => this.pointerDown(e));
+    canvas.addEventListener("pointermove", (e) => this.pointerMove(e));
+    canvas.addEventListener("pointerup", (e) => this.pointerUp(e));
+    canvas.addEventListener("pointercancel", (e) => this.pointerUp(e, true));
+    canvas.addEventListener("wheel", (e) => this.wheel(e), { passive: false });
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    new ResizeObserver(() => this.resize()).observe(canvas.parentElement);
+    if (document.fonts) document.fonts.ready.then(() => this.requestRender());
+    this.resize();
+  }
+
+  // ---------- view ----------
+
+  resize() {
+    const parent = this.canvas.parentElement;
+    const dpr = window.devicePixelRatio || 1;
+    this.width = parent.clientWidth;
+    this.height = parent.clientHeight;
+    this.canvas.width = Math.round(this.width * dpr);
+    this.canvas.height = Math.round(this.height * dpr);
+    this.canvas.style.width = `${this.width}px`;
+    this.canvas.style.height = `${this.height}px`;
+    this.dpr = dpr;
+    this.requestRender();
+  }
+
+  resetView() {
+    // Lessons are laid out for a ~1100px-wide board; shrink to fit smaller screens.
+    const scale = Math.max(0.55, Math.min(1, this.width / 1100));
+    this.view = { x: 0, y: 0, scale };
+    this.onViewChange(this.view);
+    this.requestRender();
+  }
+
+  toBoard(clientX, clientY) {
+    const rect = this.canvas.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left - this.view.x) / this.view.scale,
+      y: (clientY - rect.top - this.view.y) / this.view.scale,
+    };
+  }
+
+  // Right-hand edge of the board that isn't hidden behind the tutor card.
+  visibleRight(reservedPx = 0) {
+    return (this.width - reservedPx - this.view.x) / this.view.scale;
+  }
+
+  zoomAt(screenX, screenY, factor) {
+    const scale = Math.min(3, Math.max(0.35, this.view.scale * factor));
+    const k = scale / this.view.scale;
+    this.view.x = screenX - (screenX - this.view.x) * k;
+    this.view.y = screenY - (screenY - this.view.y) * k;
+    this.view.scale = scale;
+    this.onViewChange(this.view);
+    this.requestRender();
+  }
+
+  // ---------- tools ----------
+
+  setTool(tool) {
+    this.tool = tool;
+    this.canvas.dataset.tool = tool;
+  }
+
+  setColor(color) {
+    this.color = color;
+  }
+
+  // ---------- tutor items ----------
+
+  addItem(item, { animate = true, layer = "tutor" } = {}) {
+    const entry = { ...item, id: nextId(), layer, progress: animate ? 0 : 1 };
+    entry.duration = item.duration ?? this.estimateDuration(entry);
+    this.items.push(entry);
+    this.requestRender();
+    if (!animate) return Promise.resolve(entry);
+    return new Promise((resolve) => {
+      entry.resolve = () => resolve(entry);
+      this.startAnimation();
+    });
+  }
+
+  estimateDuration(item) {
+    if (item.kind === "line") {
+      const chars = item.segments.reduce((n, s) => n + s.text.length, 0);
+      const decorated = item.underline || item.box || item.segments.some((s) => s.ring);
+      return Math.max(350, chars * 32) + (decorated ? 450 : 0);
+    }
+    if (item.kind === "badge") return 200;
+    return 450;
+  }
+
+  finishAnimations() {
+    for (const item of this.items) {
+      if (item.progress < 1) {
+        item.progress = 1;
+        item.resolve?.();
+      }
+    }
+    this.requestRender();
+  }
+
+  removeItems(predicate) {
+    for (const item of this.items) if (predicate(item) && item.progress < 1) item.resolve?.();
+    this.items = this.items.filter((item) => !predicate(item));
+    this.requestRender();
+  }
+
+  clearLayer(layer) {
+    this.removeItems((item) => item.layer === layer);
+  }
+
+  startAnimation() {
+    if (this.animating) return;
+    this.animating = true;
+    let last = performance.now();
+    const tick = (now) => {
+      const dt = now - last;
+      last = now;
+      let pending = false;
+      // Write one item at a time, in order, like a real pen.
+      const current = this.items.find((item) => item.progress < 1);
+      if (current) {
+        current.progress = Math.min(1, current.progress + dt / current.duration);
+        if (current.progress >= 1) current.resolve?.();
+        pending = this.items.some((item) => item.progress < 1);
+      }
+      this.render();
+      if (pending) requestAnimationFrame(tick);
+      else this.animating = false;
+    };
+    requestAnimationFrame(tick);
+  }
+
+  layoutLine(item) {
+    const ctx = this.ctx;
+    let x = item.x;
+    const parts = item.segments.map((segment) => {
+      ctx.font = fontFor(item.size, segment.weight ?? item.weight ?? 400);
+      const width = ctx.measureText(segment.text).width;
+      const part = { ...segment, x, width };
+      x += width;
+      return part;
+    });
+    const width = x - item.x;
+    return { parts, width, left: item.x, top: item.y, right: item.x + width, bottom: item.y + item.size * 1.15 };
+  }
+
+  itemBounds(item) {
+    if (item.kind === "line") {
+      const box = this.layoutLine(item);
+      const pad = item.box ? 14 : 0;
+      return { left: box.left - pad, top: box.top - pad / 2, right: box.right + pad, bottom: box.bottom + pad / 2 };
+    }
+    if (item.kind === "badge") return { left: item.x - 14, top: item.y - 14, right: item.x + 14, bottom: item.y + 14 };
+    if (item.kind === "mark") {
+      const s = item.size ?? 30;
+      return { left: item.x - s / 2, top: item.y - s / 2, right: item.x + s / 2, bottom: item.y + s / 2 };
+    }
+    if (item.kind === "ellipse")
+      return { left: item.cx - item.rx, top: item.cy - item.ry, right: item.cx + item.rx, bottom: item.cy + item.ry };
+    if (item.kind === "wavy") return { left: item.x, top: item.y - 4, right: item.x + item.w, bottom: item.y + 4 };
+    return { left: 0, top: 0, right: 0, bottom: 0 };
+  }
+
+  // ---------- student ink ----------
+
+  get hasInk() {
+    return this.strokes.length > 0;
+  }
+
+  inkBounds() {
+    if (!this.strokes.length) return null;
+    let left = Infinity;
+    let top = Infinity;
+    let right = -Infinity;
+    let bottom = -Infinity;
+    for (const stroke of this.strokes)
+      for (const p of stroke.points) {
+        left = Math.min(left, p.x);
+        top = Math.min(top, p.y);
+        right = Math.max(right, p.x);
+        bottom = Math.max(bottom, p.y);
+      }
+    return { left, top, right, bottom };
+  }
+
+  // Lowest point of everything on the board (tutor writing and ink).
+  contentBottom() {
+    let bottom = 0;
+    for (const item of this.items) bottom = Math.max(bottom, this.itemBounds(item).bottom);
+    const ink = this.inkBounds();
+    if (ink) bottom = Math.max(bottom, ink.bottom);
+    return bottom;
+  }
+
+  rows() {
+    return segmentRows(this.strokes);
+  }
+
+  pushHistory(op) {
+    this.undoStack.push(op);
+    this.redoStack = [];
+    this.onInk();
+  }
+
+  applyOp(op, direction) {
+    const adding = (op.type === "add") === (direction === "redo");
+    if (adding) {
+      this.strokes.push(...op.strokes);
+      this.strokes.sort((a, b) => a.id - b.id);
+    } else {
+      const ids = new Set(op.strokes.map((s) => s.id));
+      this.strokes = this.strokes.filter((s) => !ids.has(s.id));
+    }
+  }
+
+  undo() {
+    const op = this.undoStack.pop();
+    if (!op) return;
+    this.applyOp(op, "undo");
+    this.redoStack.push(op);
+    this.onInk();
+    this.requestRender();
+  }
+
+  redo() {
+    const op = this.redoStack.pop();
+    if (!op) return;
+    this.applyOp(op, "redo");
+    this.undoStack.push(op);
+    this.onInk();
+    this.requestRender();
+  }
+
+  clearInk({ record = true } = {}) {
+    if (!this.strokes.length) return;
+    if (record) this.pushHistory({ type: "remove", strokes: [...this.strokes] });
+    this.strokes = [];
+    if (!record) {
+      this.undoStack = [];
+      this.redoStack = [];
+      this.onInk();
+    }
+    this.requestRender();
+  }
+
+  // ---------- pointer input ----------
+
+  pointerDown(e) {
+    this.canvas.setPointerCapture?.(e.pointerId);
+    this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+    if (e.pointerType === "pen") this.penSeen = true;
+    const touches = [...this.pointers.values()].filter((p) => p.type === "touch");
+
+    if (touches.length >= 2) {
+      // Two fingers: pinch/pan. Drop any stroke the first finger started.
+      if (this.live?.kind === "stroke") this.live = null;
+      this.startPinch();
+      return;
+    }
+    const wantsPan =
+      e.button === 1 || this.tool === "hand" || this.spaceDown || (e.pointerType === "touch" && this.penSeen);
+    if (wantsPan) {
+      this.gesture = { type: "pan", id: e.pointerId, x: e.clientX, y: e.clientY };
+      return;
+    }
+    if (e.button === 2) return;
+    const point = this.toBoard(e.clientX, e.clientY);
+    // Pen eraser end / barrel button reports buttons & 32.
+    if (this.tool === "eraser" || (e.buttons & 32) === 32) {
+      this.live = { kind: "erase", id: e.pointerId, removed: [] };
+      this.eraseAt(point);
+      return;
+    }
+    const highlighter = this.tool === "highlighter";
+    this.live = {
+      kind: "stroke",
+      id: e.pointerId,
+      stroke: {
+        id: nextId(),
+        tool: highlighter ? "highlighter" : "pen",
+        color: this.color,
+        width: highlighter ? 18 : this.penWidth,
+        pressureSensitive: e.pointerType === "pen",
+        points: [{ ...point, p: this.pressure(e) }],
+      },
+    };
+    this.requestRender();
+  }
+
+  pressure(e) {
+    return e.pointerType === "pen" && e.pressure > 0 ? e.pressure : 0.5;
+  }
+
+  pointerMove(e) {
+    if (!this.pointers.has(e.pointerId)) return;
+    this.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY, type: e.pointerType });
+    if (this.gesture?.type === "pinch") return this.updatePinch();
+    if (this.gesture?.type === "pan" && this.gesture.id === e.pointerId) {
+      this.view.x += e.clientX - this.gesture.x;
+      this.view.y += e.clientY - this.gesture.y;
+      this.gesture.x = e.clientX;
+      this.gesture.y = e.clientY;
+      this.onViewChange(this.view);
+      return this.requestRender();
+    }
+    if (!this.live || this.live.id !== e.pointerId) return;
+    const events = e.getCoalescedEvents?.() ?? [e];
+    for (const ev of events.length ? events : [e]) {
+      const point = this.toBoard(ev.clientX, ev.clientY);
+      if (this.live.kind === "erase") this.eraseAt(point);
+      else {
+        const pts = this.live.stroke.points;
+        const last = pts[pts.length - 1];
+        if (Math.hypot(point.x - last.x, point.y - last.y) * this.view.scale < 0.8) continue;
+        pts.push({ ...point, p: this.pressure(ev) });
+      }
+    }
+    this.requestRender();
+  }
+
+  pointerUp(e, cancelled = false) {
+    this.pointers.delete(e.pointerId);
+    if (this.gesture?.type === "pinch") {
+      if ([...this.pointers.values()].filter((p) => p.type === "touch").length < 2) this.gesture = null;
+      return;
+    }
+    if (this.gesture?.id === e.pointerId) {
+      this.gesture = null;
+      return;
+    }
+    if (!this.live || this.live.id !== e.pointerId) return;
+    const live = this.live;
+    this.live = null;
+    if (live.kind === "erase") {
+      if (live.removed.length) this.pushHistory({ type: "remove", strokes: live.removed });
+    } else if (!cancelled) {
+      this.strokes.push(live.stroke);
+      this.pushHistory({ type: "add", strokes: [live.stroke] });
+    }
+    this.requestRender();
+  }
+
+  startPinch() {
+    const [a, b] = [...this.pointers.values()].filter((p) => p.type === "touch");
+    this.gesture = {
+      type: "pinch",
+      distance: Math.hypot(a.x - b.x, a.y - b.y),
+      cx: (a.x + b.x) / 2,
+      cy: (a.y + b.y) / 2,
+    };
+  }
+
+  updatePinch() {
+    const touches = [...this.pointers.values()].filter((p) => p.type === "touch");
+    if (touches.length < 2) return;
+    const [a, b] = touches;
+    const rect = this.canvas.getBoundingClientRect();
+    const distance = Math.hypot(a.x - b.x, a.y - b.y);
+    const cx = (a.x + b.x) / 2;
+    const cy = (a.y + b.y) / 2;
+    this.view.x += cx - this.gesture.cx;
+    this.view.y += cy - this.gesture.cy;
+    if (this.gesture.distance > 0) this.zoomAt(cx - rect.left, cy - rect.top, distance / this.gesture.distance);
+    Object.assign(this.gesture, { distance, cx, cy });
+    this.requestRender();
+  }
+
+  wheel(e) {
+    e.preventDefault();
+    const rect = this.canvas.getBoundingClientRect();
+    if (e.ctrlKey || e.metaKey) {
+      this.zoomAt(e.clientX - rect.left, e.clientY - rect.top, Math.exp(-e.deltaY * 0.01));
+    } else {
+      this.view.x -= e.deltaX;
+      this.view.y -= e.deltaY;
+      this.onViewChange(this.view);
+      this.requestRender();
+    }
+  }
+
+  eraseAt(point) {
+    const radius = ERASE_RADIUS / this.view.scale;
+    const hit = this.strokes.filter((stroke) => strokeHit(stroke, point, radius + stroke.width / 2));
+    if (!hit.length) return;
+    const ids = new Set(hit.map((s) => s.id));
+    this.strokes = this.strokes.filter((s) => !ids.has(s.id));
+    this.live.removed.push(...hit);
+    this.requestRender();
+  }
+
+  // ---------- rendering ----------
+
+  requestRender() {
+    if (this.frameRequested || this.animating) return;
+    this.frameRequested = true;
+    requestAnimationFrame(() => {
+      this.frameRequested = false;
+      this.render();
+    });
+  }
+
+  render() {
+    const { ctx, dpr, view } = this;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, this.width, this.height);
+    this.drawGrid();
+    ctx.setTransform(dpr * view.scale, 0, 0, dpr * view.scale, dpr * view.x, dpr * view.y);
+    for (const stroke of this.strokes) if (stroke.tool === "highlighter") drawStroke(ctx, stroke);
+    if (this.live?.kind === "stroke" && this.live.stroke.tool === "highlighter") drawStroke(ctx, this.live.stroke);
+    for (const item of this.items) this.drawItem(item);
+    for (const stroke of this.strokes) if (stroke.tool !== "highlighter") drawStroke(ctx, stroke);
+    if (this.live?.kind === "stroke" && this.live.stroke.tool !== "highlighter") drawStroke(ctx, this.live.stroke);
+  }
+
+  drawGrid() {
+    const { ctx, view } = this;
+    const step = GRID_SPACING * view.scale;
+    if (step < 8) return;
+    ctx.strokeStyle = GRID;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = ((view.x % step) + step) % step; x < this.width; x += step) {
+      ctx.moveTo(Math.round(x) + 0.5, 0);
+      ctx.lineTo(Math.round(x) + 0.5, this.height);
+    }
+    for (let y = ((view.y % step) + step) % step; y < this.height; y += step) {
+      ctx.moveTo(0, Math.round(y) + 0.5);
+      ctx.lineTo(this.width, Math.round(y) + 0.5);
+    }
+    ctx.stroke();
+  }
+
+  drawItem(item) {
+    const ctx = this.ctx;
+    const p = item.progress;
+    if (p <= 0) return;
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = item.color ?? "#1F5FD1";
+    ctx.fillStyle = item.color ?? "#1F5FD1";
+    ctx.lineWidth = item.lineWidth ?? 2.6;
+
+    if (item.kind === "line") this.drawLine(item, p);
+    else if (item.kind === "badge") {
+      ctx.globalAlpha = Math.min(1, p * 1.5);
+      ctx.beginPath();
+      ctx.arc(item.x, item.y, 14, 0, Math.PI * 2);
+      if (item.active) {
+        ctx.fillStyle = "#1F5FD1";
+        ctx.fill();
+        ctx.fillStyle = "#FFFFFF";
+      } else {
+        ctx.strokeStyle = "#9DB6E8";
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.fillStyle = "#1F5FD1";
+      }
+      ctx.font = "700 14px Inter, system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(item.label, item.x, item.y + 1);
+    } else if (item.kind === "mark") {
+      const s = item.size ?? 30;
+      ctx.lineWidth = item.lineWidth ?? 3.4;
+      if (item.type === "tick") drawPartialPath(ctx, tickPoints(item.x, item.y, s), p);
+      else {
+        const [one, two] = crossStrokes(item.x, item.y, s);
+        drawPartialPath(ctx, one, p * 2);
+        drawPartialPath(ctx, two, p * 2 - 1);
+      }
+    } else if (item.kind === "ellipse") {
+      drawPartialPath(ctx, ellipsePoints(item.cx, item.cy, item.rx, item.ry, item.id), p);
+    } else if (item.kind === "wavy") {
+      drawPartialPath(ctx, wavyPoints(item.x, item.y, item.w), p);
+    }
+    ctx.restore();
+  }
+
+  drawLine(item, p) {
+    const ctx = this.ctx;
+    const layout = this.layoutLine(item);
+    const decorated = item.underline || item.box || item.segments.some((s) => s.ring);
+    const textP = decorated ? Math.min(1, p / 0.75) : p;
+    const decoP = decorated ? Math.max(0, (p - 0.75) / 0.25) : 0;
+    const baseline = item.y + item.size * 0.85;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(item.x - 4, item.y - item.size, layout.width * textP + 8, item.size * 3);
+    ctx.clip();
+    ctx.textBaseline = "alphabetic";
+    for (const part of layout.parts) {
+      ctx.font = fontFor(item.size, part.weight ?? item.weight ?? 400);
+      ctx.fillStyle = part.color ?? item.color;
+      ctx.fillText(part.text, part.x, baseline);
+      if (part.strike) {
+        ctx.strokeStyle = part.color ?? item.color;
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.moveTo(part.x - 2, item.y + item.size * 0.55);
+        ctx.lineTo(part.x + part.width + 2, item.y + item.size * 0.5);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+
+    if (decoP <= 0) return;
+    ctx.lineWidth = 2.6;
+    for (const part of layout.parts) {
+      if (!part.ring) continue;
+      ctx.strokeStyle = part.ring;
+      const cx = part.x + part.width / 2;
+      const cy = item.y + item.size * 0.55;
+      drawPartialPath(ctx, ellipsePoints(cx, cy, part.width / 2 + 16, item.size * 0.62, item.id), decoP);
+    }
+    ctx.strokeStyle = item.color;
+    if (item.underline) drawPartialPath(ctx, underlinePoints(item.x, item.y + item.size * 1.12, layout.width), decoP);
+    if (item.box) {
+      ctx.lineWidth = 2.6;
+      drawPartialPath(ctx, boxPoints(item.x - 16, item.y - 8, layout.width + 32, item.size * 1.3 + 8), decoP);
+    }
+  }
+
+  // ---------- export for Claude ----------
+
+  // Renders the student's ink (only) on white, with grey row labels R1, R2, … in the margin.
+  exportInk(rows = this.rows()) {
+    const bounds = this.inkBounds();
+    if (!bounds) return null;
+    const pad = 28;
+    const margin = 64;
+    const w = bounds.right - bounds.left;
+    const h = bounds.bottom - bounds.top;
+    const scale = Math.max(0.5, Math.min(2, 1400 / Math.max(w, h, 1)));
+    const width = Math.ceil(w * scale + pad * 2 + margin);
+    const height = Math.ceil(h * scale + pad * 2);
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#FFFFFF";
+    ctx.fillRect(0, 0, width, height);
+    const toX = (x) => margin + pad + (x - bounds.left) * scale;
+    const toY = (y) => pad + (y - bounds.top) * scale;
+
+    ctx.fillStyle = "#9AA0A6";
+    ctx.font = "600 20px Inter, system-ui, sans-serif";
+    ctx.textBaseline = "middle";
+    for (const row of rows) ctx.fillText(`R${row.index}`, 10, toY((row.top + row.bottom) / 2));
+
+    // Map board coordinates straight into the export: x → toX(x), y → toY(y).
+    ctx.setTransform(scale, 0, 0, scale, toX(0), toY(0));
+    for (const stroke of this.strokes) drawStroke(ctx, stroke);
+    return { dataUrl: canvas.toDataURL("image/png"), width, height };
+  }
+}
+
+function distanceToSegment(p, a, b) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lengthSq = dx * dx + dy * dy;
+  const t = lengthSq === 0 ? 0 : Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / lengthSq));
+  return Math.hypot(p.x - (a.x + t * dx), p.y - (a.y + t * dy));
+}
+
+export function strokeHit(stroke, point, radius) {
+  const pts = stroke.points;
+  if (pts.length === 1) return Math.hypot(pts[0].x - point.x, pts[0].y - point.y) <= radius;
+  for (let i = 1; i < pts.length; i++) if (distanceToSegment(point, pts[i - 1], pts[i]) <= radius) return true;
+  return false;
+}
+
+function drawStroke(ctx, stroke) {
+  const pts = stroke.points;
+  ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = stroke.color;
+  ctx.fillStyle = stroke.color;
+  if (stroke.tool === "highlighter") {
+    ctx.globalAlpha = 0.28;
+    ctx.lineWidth = stroke.width;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (const p of pts.slice(1)) ctx.lineTo(p.x, p.y);
+    if (pts.length === 1) ctx.lineTo(pts[0].x + 0.1, pts[0].y);
+    ctx.stroke();
+    ctx.restore();
+    return;
+  }
+  const widthAt = (p) => (stroke.pressureSensitive ? stroke.width * (0.45 + p.p * 1.1) : stroke.width);
+  if (pts.length === 1) {
+    ctx.beginPath();
+    ctx.arc(pts[0].x, pts[0].y, widthAt(pts[0]) / 2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+    return;
+  }
+  if (!stroke.pressureSensitive) {
+    ctx.lineWidth = stroke.width;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length - 1; i++) {
+      const mx = (pts[i].x + pts[i + 1].x) / 2;
+      const my = (pts[i].y + pts[i + 1].y) / 2;
+      ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+    }
+    ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y);
+    ctx.stroke();
+  } else {
+    for (let i = 1; i < pts.length; i++) {
+      ctx.lineWidth = (widthAt(pts[i - 1]) + widthAt(pts[i])) / 2;
+      ctx.beginPath();
+      ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
+      ctx.lineTo(pts[i].x, pts[i].y);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}

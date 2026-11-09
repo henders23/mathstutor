@@ -1,0 +1,18 @@
+{
+  "name": "mathstutor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A whiteboard maths tutor: watch a worked demo, then solve on the board while Claude reads your handwriting and guides you.",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22.9"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "1.6.0"
+  }
+}

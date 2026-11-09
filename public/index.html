@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Maths Tutor · Quadratic equations</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Kalam:wght@400;700&amp;display=swap">
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/js/app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true"><rect x="1" y="1" width="26" height="26" rx="7" fill="#1F5FD1"></rect><path d="M7 18 L11.5 10 L16 16 L21 8" stroke="#FFFFFF" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"></path></svg>
+      <span>Maths Tutor</span>
+    </div>
+    <nav class="crumbs" aria-label="Lesson">
+      <span>Quadratic equations</span>
+      <span aria-hidden="true">›</span>
+      <strong>Solving by factorising</strong>
+    </nav>
+    <div class="spacer"></div>
+    <div class="tabs" role="group" aria-label="Mode">
+      <button type="button" class="tab" id="tabLearn" aria-pressed="true">Learn</button>
+      <button type="button" class="tab" id="tabPractice" aria-pressed="false">Try it</button>
+    </div>
+    <div class="progress-label" id="progressLabel" aria-live="polite"></div>
+    <div class="settings">
+      <button type="button" class="icon-btn" id="settingsBtn" aria-label="Settings" aria-expanded="false" aria-controls="settingsPanel">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"></path></svg>
+      </button>
+      <div class="settings-panel" id="settingsPanel" hidden>
+        <label class="switch-row">
+          <input type="checkbox" id="autoSpeak">
+          <span>Read tutor messages aloud</span>
+        </label>
+        <p class="ai-status" id="aiStatus">Checking connection…</p>
+        <p class="shortcut-help">Shortcuts: P pen, H highlighter, E eraser, Space + drag to pan, Ctrl/⌘ + Z undo. Pinch or Ctrl + scroll to zoom.</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="stage">
+    <div class="board-wrap" id="boardWrap">
+      <canvas id="board" aria-label="Whiteboard. Draw your working here with a pen, finger or mouse."></canvas>
+    </div>
+
+    <div class="toolrail" role="toolbar" aria-label="Whiteboard tools" aria-orientation="vertical">
+      <button type="button" class="tool" data-tool="pen" aria-label="Pen (P)" aria-pressed="true">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M4 20l4-1L19 8l-3-3L5 16l-1 4z"></path><path d="M14 7l3 3"></path></svg>
+      </button>
+      <button type="button" class="tool" data-tool="highlighter" aria-label="Highlighter (H)" aria-pressed="false">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M9 14l6-10 4 3-7 9z"></path><path d="M9 14l-1 3 3 0 1-1"></path><path d="M4 21h16"></path></svg>
+      </button>
+      <button type="button" class="tool" data-tool="eraser" aria-label="Eraser (E)" aria-pressed="false">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true"><path d="M4 15l9-9 6 6-7 7H8z"></path><path d="M9 10l6 6"></path><path d="M8 21h12"></path></svg>
+      </button>
+      <button type="button" class="tool" data-tool="hand" aria-label="Move the board (Space)" aria-pressed="false">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18M3 12h18"></path><path d="M9 6l3-3 3 3M9 18l3 3 3-3M6 9l-3 3 3 3M18 9l3 3-3 3"></path></svg>
+      </button>
+      <div class="rail-divider"></div>
+      <button type="button" class="swatch" data-color="#23262E" aria-label="Black ink" aria-pressed="true"><span></span></button>
+      <button type="button" class="swatch" data-color="#1F5FD1" aria-label="Blue ink" aria-pressed="false"><span></span></button>
+      <button type="button" class="swatch" data-color="#C92A2A" aria-label="Red ink" aria-pressed="false"><span></span></button>
+      <button type="button" class="swatch" data-color="#237032" aria-label="Green ink" aria-pressed="false"><span></span></button>
+      <div class="rail-divider"></div>
+      <button type="button" class="tool" id="undoBtn" aria-label="Undo">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14L4 9l5-5"></path><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"></path></svg>
+      </button>
+      <button type="button" class="tool" id="redoBtn" aria-label="Redo">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 14l5-5-5-5"></path><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"></path></svg>
+      </button>
+      <button type="button" class="tool" id="clearBtn" aria-label="Clear my writing">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16"></path><path d="M9 7V4h6v3"></path><path d="M6 7l1 13h10l1-13"></path></svg>
+      </button>
+    </div>
+
+    <aside class="tutor-card" id="tutorCard" aria-label="Tutor">
+      <div class="tutor-head">
+        <span class="avatar" id="tutorAvatar" data-tone="info" aria-hidden="true"></span>
+        <div class="tutor-who">
+          <span class="tutor-name">Tutor</span>
+          <span class="tutor-status" id="tutorStatus"></span>
+        </div>
+        <button type="button" class="icon-btn bordered" id="speakBtn" aria-label="Read aloud">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9z"></path><path d="M16.5 8.5a5 5 0 0 1 0 7"></path><path d="M19 6a8.5 8.5 0 0 1 0 12"></path></svg>
+        </button>
+      </div>
+      <div class="tutor-body" id="tutorBody" aria-live="polite"></div>
+    </aside>
+
+    <div class="dock-wrap">
+      <div class="dock" id="dock"></div>
+    </div>
+  </main>
+</body>
+</html>
