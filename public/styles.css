@@ -393,3 +393,6 @@ button:focus-visible, input:focus-visible { outline: 3px solid #8fb1f0; outline-
   .lesson-btn strong { max-width: 120px; }
   .lesson-menu { width: min(320px, calc(100vw - 24px)); }
 }
+
+.save-note { margin: 8px 0; color: var(--muted); font-size: 13px; }
+.reset-btn { width: 100%; color: var(--fix); }

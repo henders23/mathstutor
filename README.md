@@ -39,6 +39,18 @@ Without an API key everything except handwriting checking still works. In that c
 | `PORT` / `HOST` | `3000` / `127.0.0.1` | Where the server listens. |
 | `TUTOR_AI` | – | `off` turns handwriting checking off even when a key is set. |
 
+## Saving progress
+
+Progress is saved automatically in the browser (localStorage), so a reload or closing the tab doesn't lose anything. It saves:
+
+- the lesson and screen you were on, and how far through the demo you were
+- your question number in each lesson, and which questions you've solved
+- the current question's hints and steps used, plus everything written on the board, including the tutor's marks
+
+It saves on every change and straight away when the tab is hidden or closed. Saved data is checked when it's loaded, so a corrupted entry is simply ignored.
+
+Progress belongs to that browser on that device; there are no accounts yet. **Settings → Reset my progress** clears it. Undo history starts fresh after a reload.
+
 ## How the checking works
 
 - The board stores your writing as vector strokes. When you press **Check**, the app groups the strokes into lines of working (`public/js/rows.js`). It then draws only your ink onto a clean white image and labels each line R1, R2, … in the margin.
@@ -66,6 +78,7 @@ public/styles.css    Styles
 public/js/app.js     Lesson flow: demo, practice, hints, feedback on the board
 public/js/board.js   The whiteboard: strokes, pan/zoom, animated tutor writing, image export
 public/js/rows.js    Groups strokes into lines of working
+public/js/progress.js  Saves and validates progress in localStorage
 public/js/lessons/   Lesson content (shared by browser, server and tests)
   common.js          Maths and formatting helpers
   factorising.js     Lesson 1

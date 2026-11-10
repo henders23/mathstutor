@@ -360,6 +360,25 @@ export class Board {
 
   // ---------- student ink ----------
 
+  // Plain data for saving: the student's strokes and (optionally) the tutor's items.
+  exportState({ items = true } = {}) {
+    return {
+      strokes: this.strokes.map((s) => ({ ...s, points: s.points.map((p) => ({ ...p })) })),
+      items: items ? this.items.map(({ id, progress, duration, resolve, ...data }) => data) : [],
+    };
+  }
+
+  // Restores saved strokes and items instantly (no animation). Undo history starts empty.
+  importState({ strokes = [], items = [] } = {}) {
+    for (const stroke of strokes) idCounter = Math.max(idCounter, stroke.id + 1);
+    this.strokes = strokes.map((s) => ({ ...s }));
+    this.undoStack = [];
+    this.redoStack = [];
+    for (const { layer = "tutor", ...item } of items) this.addItem(item, { animate: false, layer });
+    this.onInk();
+    this.requestRender();
+  }
+
   get hasInk() {
     return this.strokes.length > 0;
   }

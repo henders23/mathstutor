@@ -3,6 +3,7 @@
 import { Board } from "./board.js";
 import { INK, LESSONS } from "./lessons/index.js";
 import { LEFT } from "./lessons/common.js";
+import { clearProgress, loadProgress, saveProgress } from "./progress.js";
 
 // ---------- tiny DOM helpers (text always goes in via textContent) ----------
 
@@ -86,12 +87,14 @@ const state = {
   demoStep: 0,
   demoBusy: false,
   index: 0,
+  indexByLesson: {},
   hintsUsed: 0,
   hints: [],
   stepReached: 0,
   shownSteps: 0,
   stepsShown: 0,
   complete: false,
+  solvedMessage: "",
   busy: false,
   solved: new Set(),
   requestId: 0,
@@ -104,7 +107,12 @@ try {
   autoSpeak = localStorage.getItem(AUTO_SPEAK_KEY) === "1";
 } catch {}
 
-const board = new Board($("board"), { onInk: updateToolButtons });
+const board = new Board($("board"), {
+  onInk: () => {
+    updateToolButtons();
+    scheduleSave();
+  },
+});
 window.mathsTutorBoard = board; // handy for debugging in the console
 
 const lesson = () => state.lesson;
@@ -121,6 +129,7 @@ function setTutor({ tone = "info", status = "", speech = "", body = [] }) {
   $("tutorCard").scrollTop = 0;
   state.speech = speech;
   if (autoSpeak && speech) speak(speech);
+  scheduleSave();
 }
 
 function speak(text) {
@@ -174,7 +183,8 @@ function dots(count, isOn, isCurrent = () => false, label) {
 
 // ---------- Learn mode ----------
 
-async function enterLearn() {
+// restore: { demoStep, strokes } when picking up where a saved session left off.
+async function enterLearn(restore = null) {
   state.mode = "learn";
   state.demoStep = 0;
   state.demoBusy = false;
@@ -187,8 +197,24 @@ async function enterLearn() {
   board.setColor(INK.student);
   selectColor(INK.student);
   renderLessonPicker();
+  if (restore) {
+    board.addItem(lesson().demo.title, { animate: false });
+    for (let step = 1; step <= restore.demoStep; step++) writeDemoStep(step, false);
+    state.demoStep = restore.demoStep;
+    markActiveBadge();
+    board.importState({ strokes: restore.strokes });
+    renderLearn();
+    return;
+  }
   renderLearn();
   await board.addItem(lesson().demo.title);
+}
+
+function writeDemoStep(step, animate = true) {
+  const { items } = lesson().demo.steps[step - 1];
+  return lesson().demo.autoLayout
+    ? writeBelow(items, { label: String(step), gap: 14, tag: { demoStep: step }, animate })
+    : items.map((item) => board.addItem({ ...item, demoStep: step }, { animate }));
 }
 
 function renderLearn() {
@@ -236,10 +262,7 @@ async function demoNext() {
   state.demoBusy = true;
   const step = state.demoStep;
   renderLearn();
-  const demoStep = steps[step - 1];
-  const writes = lesson().demo.autoLayout
-    ? writeBelow(demoStep.items, { label: String(step), gap: 14, tag: { demoStep: step } })
-    : demoStep.items.map((item) => board.addItem({ ...item, demoStep: step }));
+  const writes = writeDemoStep(step);
   markActiveBadge();
   await Promise.all(writes);
   if (state.mode !== "learn" || state.demoStep !== step) return;
@@ -255,19 +278,23 @@ function demoBack() {
   state.demoBusy = false;
   markActiveBadge();
   renderLearn();
+  scheduleSave();
 }
 
 // ---------- Try it mode ----------
 
-async function enterPractice(index) {
+// restore: a saved question state plus its board, when resuming after a reload.
+async function enterPractice(index, restore = null) {
   state.mode = "practice";
   state.index = index;
-  state.hintsUsed = 0;
-  state.hints = [];
-  state.stepReached = 0;
-  state.shownSteps = 0;
-  state.stepsShown = 0;
+  state.indexByLesson[lesson().id] = index;
+  state.hintsUsed = restore?.hintsUsed ?? 0;
+  state.hints = restore?.hints ?? [];
+  state.stepReached = restore?.stepReached ?? 0;
+  state.shownSteps = restore?.shownSteps ?? 0;
+  state.stepsShown = restore?.stepsShown ?? 0;
   state.complete = false;
+  state.solvedMessage = "";
   state.busy = false;
   state.requestId += 1;
   syncTabs();
@@ -279,9 +306,17 @@ async function enterPractice(index) {
   selectTool("pen");
   board.setColor(INK.student);
   selectColor(INK.student);
+  renderLessonPicker();
+  if (restore) {
+    board.importState(restore.board);
+    if (!restore.board.items.length) board.addItem(lesson().practiceTitle(problem()), { animate: false });
+    if (restore.complete) return showSolved(restore.solvedMessage);
+    showIntro();
+    renderPracticeDock();
+    return;
+  }
   showIntro();
   renderPracticeDock();
-  renderLessonPicker();
   await board.addItem(lesson().practiceTitle(problem()));
 }
 
@@ -472,6 +507,7 @@ function rootsText() {
 
 function showSolved(message) {
   state.solved.add(problem().id);
+  state.solvedMessage = message ?? "";
   state.stepReached = 5;
   const last = state.index === lesson().practice.length - 1;
   const nextLesson = LESSONS[LESSONS.indexOf(lesson()) + 1];
@@ -632,16 +668,16 @@ async function showNextStep() {
 
 // Writes tutor items one under another, below everything already on the board,
 // with a numbered badge beside the first. Returns the write promises.
-function writeBelow(items, { label, gap = 20, tag = {} }) {
+function writeBelow(items, { label, gap = 20, tag = {}, animate = true }) {
   let y = Math.max(130, board.contentBottom() + gap);
   const writes = [];
   items.forEach((item, i) => {
     const placed = { ...item, x: item.x ?? LEFT, y: item.y ?? y, ...tag };
     if (i === 0 && label) {
       const bounds = board.itemBounds(placed);
-      writes.push(board.addItem({ kind: "badge", x: 108, y: (bounds.top + bounds.bottom) / 2, label, ...tag }));
+      writes.push(board.addItem({ kind: "badge", x: 108, y: (bounds.top + bounds.bottom) / 2, label, ...tag }, { animate }));
     }
-    writes.push(board.addItem(placed));
+    writes.push(board.addItem(placed, { animate }));
     y = board.itemBounds(placed).bottom + gap;
   });
   return writes;
@@ -650,8 +686,9 @@ function writeBelow(items, { label, gap = 20, tag = {} }) {
 // ---------- lessons ----------
 
 function switchLesson(next) {
+  state.indexByLesson[lesson().id] = state.index;
   state.lesson = next;
-  state.index = 0;
+  state.index = state.indexByLesson[next.id] ?? 0;
   closeLessonMenu();
   enterLearn();
 }
@@ -737,6 +774,7 @@ async function drawAnnotations(feedback, rows) {
     }
     await board.addItem(item, layer);
   }
+  scheduleSave();
 }
 
 // ---------- toolbar, tabs, settings ----------
@@ -854,12 +892,77 @@ async function loadStatus() {
     ? "Handwriting checking is on — Claude reads your working when you press Check my work."
     : "Handwriting checking is off on this server (no API key). You can still do the demo, get hints and type your answers.";
   status.classList.toggle("on", state.ai);
-  if (state.mode === "practice" && !state.busy) showIntro();
+  if (state.mode === "practice" && !state.busy && !state.complete) showIntro();
 }
+
+// ---------- saving progress ----------
+
+let saveTimer = null;
+let resetting = false;
+
+function snapshot() {
+  const practice = state.mode === "practice";
+  return {
+    lessonId: lesson().id,
+    mode: state.mode,
+    demoStep: practice ? 0 : state.demoStep,
+    indexByLesson: { ...state.indexByLesson, [lesson().id]: state.index },
+    solved: [...state.solved],
+    question: practice
+      ? {
+          problemId: problem().id,
+          hintsUsed: state.hintsUsed,
+          hints: state.hints,
+          stepReached: state.stepReached,
+          shownSteps: state.shownSteps,
+          stepsShown: state.stepsShown,
+          complete: state.complete,
+          solvedMessage: state.solvedMessage,
+        }
+      : null,
+    board: board.exportState({ items: practice }),
+  };
+}
+
+function saveNow() {
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  if (!resetting) saveProgress(snapshot());
+}
+
+function scheduleSave() {
+  if (resetting) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveNow, 400);
+}
+
+// Save straight away when the tab is hidden or closed, so nothing written is lost.
+window.addEventListener("pagehide", saveNow);
+document.addEventListener("visibilitychange", () => document.visibilityState === "hidden" && saveNow());
+
+function resume() {
+  const saved = loadProgress(LESSONS);
+  if (!saved) return enterLearn();
+  state.lesson = LESSONS.find((l) => l.id === saved.lessonId);
+  state.solved = new Set(saved.solved);
+  state.indexByLesson = saved.indexByLesson;
+  state.index = saved.indexByLesson[saved.lessonId] ?? 0;
+  if (saved.mode === "practice")
+    return enterPractice(state.index, saved.question && { ...saved.question, board: saved.board });
+  return enterLearn({ demoStep: saved.demoStep, strokes: saved.board.strokes });
+}
+
+$("resetProgress").addEventListener("click", () => {
+  if (!window.confirm("Start again from scratch? This clears your solved questions and anything on the board.")) return;
+  resetting = true;
+  clearTimeout(saveTimer);
+  clearProgress();
+  window.location.reload();
+});
 
 // ---------- start ----------
 
 updateToolButtons();
 setTool("pen");
 loadStatus();
-enterLearn();
+resume();
