@@ -4,7 +4,7 @@
 // Everything is stored as vectors in board coordinates, so the board can be
 // re-rendered at any zoom and exported as a crisp image for Claude.
 
-import { segmentRows } from "./rows.js";
+import { segmentRows, typedRowText } from "./rows.js";
 
 export const HAND_FONT = "Kalam, 'Segoe Print', 'Comic Sans MS', cursive";
 const BG = "#FCFCFA";
@@ -125,11 +125,30 @@ function boxPoints(x, y, w, h) {
 }
 
 export class Board {
-  constructor(canvas, { onInk = () => {}, onViewChange = () => {} } = {}) {
+  // renderMath(el, latex): draws a typed line into el. mathToText(latex): plain-text version for the
+  // image sent to Claude. onTypeTap(point, typedLine|null): the Type tool was tapped on the board.
+  constructor(
+    canvas,
+    {
+      onInk = () => {},
+      onViewChange = () => {},
+      renderMath = (el, latex) => (el.textContent = latex),
+      mathToText = (latex) => latex,
+      onTypeTap = () => {},
+    } = {},
+  ) {
     this.canvas = canvas;
     this.ctx = canvas.getContext("2d");
     this.onInk = onInk;
     this.onViewChange = onViewChange;
+    this.renderMath = renderMath;
+    this.mathToText = mathToText;
+    this.onTypeTap = onTypeTap;
+    this.typed = [];
+    // Typed lines are real DOM (so maths renders properly); this layer follows the board's pan and zoom.
+    this.mathLayer = document.createElement("div");
+    this.mathLayer.className = "typed-layer";
+    canvas.parentElement.appendChild(this.mathLayer);
     this.view = { x: 0, y: 0, scale: 1 };
     this.items = [];
     this.strokes = [];
@@ -154,7 +173,7 @@ export class Board {
     canvas.addEventListener("wheel", (e) => this.wheel(e), { passive: false });
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
     new ResizeObserver(() => this.resize()).observe(canvas.parentElement);
-    if (document.fonts) document.fonts.ready.then(() => this.requestRender());
+    if (document.fonts) document.fonts.ready.then(() => this.remeasureTyped());
     this.resize();
   }
 
@@ -365,13 +384,17 @@ export class Board {
     return {
       strokes: this.strokes.map((s) => ({ ...s, points: s.points.map((p) => ({ ...p })) })),
       items: items ? this.items.map(({ id, progress, duration, resolve, ...data }) => data) : [],
+      typed: this.typed.map((t) => this.typedData(t)),
     };
   }
 
   // Restores saved strokes and items instantly (no animation). Undo history starts empty.
-  importState({ strokes = [], items = [] } = {}) {
+  importState({ strokes = [], items = [], typed = [] } = {}) {
     for (const stroke of strokes) idCounter = Math.max(idCounter, stroke.id + 1);
     this.strokes = strokes.map((s) => ({ ...s }));
+    for (const t of this.typed) t.el.remove();
+    this.typed = [];
+    for (const t of typed) this.insertTyped(t);
     this.undoStack = [];
     this.redoStack = [];
     for (const { layer = "tutor", ...item } of items) this.addItem(item, { animate: false, layer });
@@ -381,6 +404,24 @@ export class Board {
 
   get hasInk() {
     return this.strokes.length > 0;
+  }
+
+  // Anything the student has put on the board: handwriting or typed lines.
+  get hasWork() {
+    return this.strokes.length > 0 || this.typed.length > 0;
+  }
+
+  workBounds() {
+    const boxes = this.typedBoxes();
+    const ink = this.inkBounds();
+    if (ink) boxes.push(ink);
+    if (!boxes.length) return null;
+    return {
+      left: Math.min(...boxes.map((b) => b.left)),
+      top: Math.min(...boxes.map((b) => b.top)),
+      right: Math.max(...boxes.map((b) => b.right)),
+      bottom: Math.max(...boxes.map((b) => b.bottom)),
+    };
   }
 
   inkBounds() {
@@ -403,13 +444,109 @@ export class Board {
   contentBottom() {
     let bottom = 0;
     for (const item of this.items) bottom = Math.max(bottom, this.itemBounds(item).bottom);
-    const ink = this.inkBounds();
-    if (ink) bottom = Math.max(bottom, ink.bottom);
+    const work = this.workBounds();
+    if (work) bottom = Math.max(bottom, work.bottom);
     return bottom;
   }
 
   rows() {
-    return segmentRows(this.strokes);
+    return segmentRows(this.strokes, this.typedBoxes());
+  }
+
+  // Exact typed content per row, for Claude: [{ row, latex }].
+  typedRows(rows) {
+    return typedRowText(rows, this.typed);
+  }
+
+  // ---------- typed maths lines ----------
+
+  typedData(t) {
+    return { id: t.id, latex: t.latex, x: t.x, y: t.y };
+  }
+
+  insertTyped(data) {
+    const entry = { ...data, w: 40, h: 40 };
+    idCounter = Math.max(idCounter, entry.id + 1);
+    entry.el = document.createElement("div");
+    entry.el.className = "typed-line";
+    this.mathLayer.appendChild(entry.el);
+    this.typed.push(entry);
+    this.typed.sort((a, b) => a.id - b.id);
+    this.refreshTyped(entry);
+    return entry;
+  }
+
+  refreshTyped(entry) {
+    this.renderMath(entry.el, entry.latex);
+    entry.el.style.left = `${entry.x}px`;
+    entry.el.style.top = `${entry.y}px`;
+    this.measureTyped(entry);
+  }
+
+  measureTyped(entry) {
+    if (!entry.el.isConnected || entry.el.hidden) return;
+    entry.w = Math.max(entry.el.offsetWidth, 20);
+    entry.h = Math.max(entry.el.offsetHeight, 20);
+  }
+
+  remeasureTyped() {
+    for (const t of this.typed) this.measureTyped(t);
+    this.requestRender();
+  }
+
+  deleteTyped(id) {
+    const entry = this.typedById(id);
+    if (!entry) return;
+    entry.el.remove();
+    this.typed = this.typed.filter((t) => t.id !== id);
+  }
+
+  typedById(id) {
+    return this.typed.find((t) => t.id === id) ?? null;
+  }
+
+  typedBoxes() {
+    return this.typed.map((t) => {
+      this.measureTyped(t);
+      return { id: t.id, left: t.x, top: t.y, right: t.x + t.w, bottom: t.y + t.h };
+    });
+  }
+
+  typedAt(point, slack = 6) {
+    for (let i = this.typed.length - 1; i >= 0; i--) {
+      const t = this.typed[i];
+      if (point.x >= t.x - slack && point.x <= t.x + t.w + slack && point.y >= t.y - slack && point.y <= t.y + t.h + slack) return t;
+    }
+    return null;
+  }
+
+  addTyped({ latex, x, y }) {
+    const entry = this.insertTyped({ id: nextId(), latex, x, y });
+    this.pushHistory({ type: "typed-add", items: [this.typedData(entry)] });
+    return entry;
+  }
+
+  updateTyped(id, changes) {
+    const entry = this.typedById(id);
+    if (!entry) return null;
+    const before = this.typedData(entry);
+    Object.assign(entry, changes);
+    this.refreshTyped(entry);
+    this.pushHistory({ type: "typed-change", before, after: this.typedData(entry) });
+    return entry;
+  }
+
+  removeTyped(ids) {
+    const items = ids.map((id) => this.typedById(id)).filter(Boolean).map((t) => this.typedData(t));
+    if (!items.length) return;
+    for (const item of items) this.deleteTyped(item.id);
+    this.pushHistory({ type: "typed-remove", items });
+  }
+
+  // Hide a line while its editor is open over it.
+  setTypedHidden(id, hidden) {
+    const entry = this.typedById(id);
+    if (entry) entry.el.hidden = hidden;
   }
 
   pushHistory(op) {
@@ -419,7 +556,25 @@ export class Board {
   }
 
   applyOp(op, direction) {
-    const adding = (op.type === "add") === (direction === "redo");
+    const forward = direction === "redo";
+    if (op.type === "batch") {
+      for (const inner of forward ? op.ops : [...op.ops].reverse()) this.applyOp(inner, direction);
+      return;
+    }
+    if (op.type === "typed-add" || op.type === "typed-remove") {
+      const adding = (op.type === "typed-add") === forward;
+      for (const item of op.items) adding ? this.insertTyped(item) : this.deleteTyped(item.id);
+      return;
+    }
+    if (op.type === "typed-change") {
+      const entry = this.typedById(op.after.id);
+      if (entry) {
+        Object.assign(entry, forward ? op.after : op.before);
+        this.refreshTyped(entry);
+      }
+      return;
+    }
+    const adding = (op.type === "add") === forward;
     if (adding) {
       this.strokes.push(...op.strokes);
       this.strokes.sort((a, b) => a.id - b.id);
@@ -448,9 +603,14 @@ export class Board {
   }
 
   clearInk({ record = true } = {}) {
-    if (!this.strokes.length) return;
-    if (record) this.pushHistory({ type: "remove", strokes: [...this.strokes] });
+    if (!this.hasWork) return;
+    const ops = [];
+    if (this.strokes.length) ops.push({ type: "remove", strokes: [...this.strokes] });
+    if (this.typed.length) ops.push({ type: "typed-remove", items: this.typed.map((t) => this.typedData(t)) });
+    for (const t of this.typed) t.el.remove();
+    this.typed = [];
     this.strokes = [];
+    if (record) this.pushHistory(ops.length === 1 ? ops[0] : { type: "batch", ops });
     if (!record) {
       this.undoStack = [];
       this.redoStack = [];
@@ -482,8 +642,13 @@ export class Board {
     if (e.button === 2) return;
     const point = this.toBoard(e.clientX, e.clientY);
     // Pen eraser end / barrel button reports buttons & 32.
+    if (this.tool === "type") {
+      const hit = this.typedAt(point);
+      this.live = { kind: "type", id: e.pointerId, start: point, hit, moved: false, origin: hit && { x: hit.x, y: hit.y } };
+      return;
+    }
     if (this.tool === "eraser" || (e.buttons & 32) === 32) {
-      this.live = { kind: "erase", id: e.pointerId, removed: [] };
+      this.live = { kind: "erase", id: e.pointerId, removed: [], removedTyped: [] };
       this.eraseAt(point);
       return;
     }
@@ -520,6 +685,21 @@ export class Board {
       return this.requestRender();
     }
     if (!this.live || this.live.id !== e.pointerId) return;
+    if (this.live.kind === "type") {
+      const { hit, start, origin } = this.live;
+      if (!hit) return;
+      const point = this.toBoard(e.clientX, e.clientY);
+      const dx = point.x - start.x;
+      const dy = point.y - start.y;
+      if (!this.live.moved && Math.hypot(dx, dy) * this.view.scale < 6) return;
+      // Drag a typed line to move it.
+      this.live.moved = true;
+      hit.x = origin.x + dx;
+      hit.y = origin.y + dy;
+      hit.el.style.left = `${hit.x}px`;
+      hit.el.style.top = `${hit.y}px`;
+      return;
+    }
     const events = e.getCoalescedEvents?.() ?? [e];
     for (const ev of events.length ? events : [e]) {
       const point = this.toBoard(ev.clientX, ev.clientY);
@@ -547,8 +727,24 @@ export class Board {
     if (!this.live || this.live.id !== e.pointerId) return;
     const live = this.live;
     this.live = null;
+    if (live.kind === "type") {
+      const { hit, origin } = live;
+      if (live.moved && hit) {
+        if (cancelled) Object.assign(hit, origin);
+        const moved = { ...this.typedData(hit) };
+        Object.assign(hit, origin);
+        if (!cancelled) this.updateTyped(hit.id, { x: moved.x, y: moved.y });
+        else this.refreshTyped(hit);
+      } else if (!cancelled) {
+        this.onTypeTap(live.start, hit);
+      }
+      return;
+    }
     if (live.kind === "erase") {
-      if (live.removed.length) this.pushHistory({ type: "remove", strokes: live.removed });
+      const ops = [];
+      if (live.removed.length) ops.push({ type: "remove", strokes: live.removed });
+      if (live.removedTyped.length) ops.push({ type: "typed-remove", items: live.removedTyped });
+      if (ops.length) this.pushHistory(ops.length === 1 ? ops[0] : { type: "batch", ops });
     } else if (!cancelled) {
       this.strokes.push(live.stroke);
       this.pushHistory({ type: "add", strokes: [live.stroke] });
@@ -596,6 +792,11 @@ export class Board {
 
   eraseAt(point) {
     const radius = ERASE_RADIUS / this.view.scale;
+    const typedHit = this.typedAt(point, radius);
+    if (typedHit) {
+      this.live.removedTyped.push(this.typedData(typedHit));
+      this.deleteTyped(typedHit.id);
+    }
     const hit = this.strokes.filter((stroke) => strokeHit(stroke, point, radius + stroke.width / 2));
     if (!hit.length) return;
     const ids = new Set(hit.map((s) => s.id));
@@ -622,6 +823,7 @@ export class Board {
     ctx.fillRect(0, 0, this.width, this.height);
     this.drawGrid();
     ctx.setTransform(dpr * view.scale, 0, 0, dpr * view.scale, dpr * view.x, dpr * view.y);
+    this.mathLayer.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.scale})`;
     for (const stroke of this.strokes) if (stroke.tool === "highlighter") drawStroke(ctx, stroke);
     if (this.live?.kind === "stroke" && this.live.stroke.tool === "highlighter") drawStroke(ctx, this.live.stroke);
     for (const item of this.items) this.drawItem(item);
@@ -786,7 +988,7 @@ export class Board {
 
   // Renders the student's ink (only) on white, with grey row labels R1, R2, … in the margin.
   exportInk(rows = this.rows()) {
-    const bounds = this.inkBounds();
+    const bounds = this.workBounds();
     if (!bounds) return null;
     const pad = 28;
     const margin = 64;
@@ -812,6 +1014,19 @@ export class Board {
     // Map board coordinates straight into the export: x → toX(x), y → toY(y).
     ctx.setTransform(scale, 0, 0, scale, toX(0), toY(0));
     for (const stroke of this.strokes) drawStroke(ctx, stroke);
+    // Typed lines: a light dashed box with their plain-text form (the exact LaTeX goes to Claude separately).
+    for (const t of this.typed) {
+      ctx.save();
+      ctx.strokeStyle = "#B8C4D6";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 4]);
+      ctx.strokeRect(t.x - 4, t.y - 2, t.w + 8, t.h + 4);
+      ctx.fillStyle = "#1E3A8A";
+      ctx.font = "500 24px Inter, system-ui, sans-serif";
+      ctx.textBaseline = "middle";
+      ctx.fillText(this.mathToText(t.latex), t.x + 4, t.y + t.h / 2);
+      ctx.restore();
+    }
     return { dataUrl: canvas.toDataURL("image/png"), width, height };
   }
 }

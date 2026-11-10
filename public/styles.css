@@ -115,10 +115,11 @@ button:focus-visible, input:focus-visible { outline: 3px solid #8fb1f0; outline-
 /* ---------- stage & board ---------- */
 
 .stage { position: relative; flex: 1; min-height: 0; }
-.board-wrap { position: absolute; inset: 0; }
+.board-wrap { position: absolute; inset: 0; overflow: hidden; }
 #board { display: block; cursor: crosshair; }
 #board[data-tool="hand"] { cursor: grab; }
 #board[data-tool="eraser"] { cursor: cell; }
+#board[data-tool="type"] { cursor: text; }
 
 .toolrail {
   position: absolute;
@@ -396,3 +397,76 @@ button:focus-visible, input:focus-visible { outline: 3px solid #8fb1f0; outline-
 
 .save-note { margin: 8px 0; color: var(--muted); font-size: 13px; }
 .reset-btn { width: 100%; color: var(--fix); }
+
+/* ---------- typed maths ---------- */
+
+/* Follows the board's pan/zoom (transform set from JS). Purely visual: the canvas handles input. */
+.typed-layer { position: absolute; left: 0; top: 0; transform-origin: 0 0; pointer-events: none; }
+.typed-line {
+  position: absolute;
+  padding: 2px 8px;
+  font-size: 30px;
+  line-height: 1.3;
+  color: var(--ink);
+  white-space: nowrap;
+  border-radius: 8px;
+}
+body:has(#board[data-tool="type"]) .typed-line { background: rgba(31, 95, 209, 0.06); outline: 1px dashed #b8c4d6; }
+.typed-editor {
+  position: absolute;
+  pointer-events: auto;
+  min-width: 160px;
+  padding: 2px 8px;
+  font-size: 30px;
+  color: var(--ink);
+  background: var(--surface);
+  border: 2px solid var(--tutor);
+  border-radius: 10px;
+  box-shadow: 0 4px 16px rgba(16, 24, 40, 0.12);
+  --caret-color: var(--tutor);
+  --selection-background-color: var(--tutor-tint);
+  --placeholder-color: #9db6e8;
+}
+
+.keypad {
+  position: fixed;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  width: min(760px, calc(100vw - 16px));
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  z-index: 8;
+}
+.keypad-keys { display: grid; grid-template-columns: repeat(10, minmax(0, 1fr)); gap: 6px; }
+.key {
+  min-height: 44px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: #f7f8fa;
+  font-family: "Times New Roman", Georgia, serif;
+  font-size: 20px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.key:hover { background: var(--tutor-tint); }
+.key.wide { grid-column: span 1; font-family: Inter, system-ui, sans-serif; font-size: 14px; font-weight: 600; }
+.key.primary { background: var(--tutor); border-color: var(--tutor); color: #fff; }
+.typing .dock-wrap { visibility: hidden; }
+
+@media (max-width: 760px) {
+  .keypad-keys { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .key { min-height: 40px; font-size: 18px; }
+}
+
+/* We provide our own keypad, so hide MathLive's built-in keyboard and menu buttons. */
+.typed-editor::part(virtual-keyboard-toggle),
+.typed-editor::part(menu-toggle) { display: none; }
+
+@media (max-width: 760px) {
+  /* The keypad takes the bottom of the screen while typing; the tutor panel comes back afterwards. */
+  .typing .tutor-card { display: none; }
+}

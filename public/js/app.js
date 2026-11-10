@@ -4,6 +4,8 @@ import { Board } from "./board.js";
 import { INK, LESSONS } from "./lessons/index.js";
 import { LEFT } from "./lessons/common.js";
 import { clearProgress, loadProgress, saveProgress } from "./progress.js";
+import { TypeEditor, loadMathLive, mathToText, renderMath } from "./typing.js";
+import { answersFromText } from "./mathtext.js";
 
 // ---------- tiny DOM helpers (text always goes in via textContent) ----------
 
@@ -112,9 +114,18 @@ const board = new Board($("board"), {
     updateToolButtons();
     scheduleSave();
   },
+  renderMath,
+  mathToText,
+  // Type tool: tap a typed line to edit it, or empty board to start a new one there.
+  onTypeTap: (point, line) => typeEditor.openAt(line ? { line } : { x: point.x, y: point.y - 24 }),
+});
+const typeEditor = new TypeEditor(board, $("keypad"), {
+  onOpen: () => document.body.classList.add("typing"),
+  onClose: () => document.body.classList.remove("typing"),
 });
 window.mathsTutorBoard = board; // handy for debugging in the console
 
+let mathReady = false; // set once MathLive (the maths input boxes) has loaded
 const lesson = () => state.lesson;
 const problem = () => lesson().practice[state.index];
 
@@ -190,6 +201,7 @@ async function enterLearn(restore = null) {
   state.demoBusy = false;
   state.requestId += 1;
   syncTabs();
+  typeEditor.cancel();
   board.finishAnimations();
   board.clearInk({ record: false });
   board.removeItems(() => true);
@@ -202,7 +214,7 @@ async function enterLearn(restore = null) {
     for (let step = 1; step <= restore.demoStep; step++) writeDemoStep(step, false);
     state.demoStep = restore.demoStep;
     markActiveBadge();
-    board.importState({ strokes: restore.strokes });
+    board.importState({ strokes: restore.strokes, typed: restore.typed });
     renderLearn();
     return;
   }
@@ -298,6 +310,7 @@ async function enterPractice(index, restore = null) {
   state.busy = false;
   state.requestId += 1;
   syncTabs();
+  typeEditor.cancel();
   board.finishAnimations();
   board.clearInk({ record: false });
   board.removeItems(() => true);
@@ -370,7 +383,9 @@ function thinking(text) {
 
 async function askClaude(mode) {
   const rows = board.rows();
-  const exported = board.exportInk(rows);
+  // The image carries the handwriting; typed lines also go as exact text. All-typed boards need no image.
+  const image = board.hasInk ? board.exportInk(rows).dataUrl : null;
+  const typedRows = board.typedRows(rows);
   const id = ++state.requestId;
   const response = await fetch("/api/feedback", {
     method: "POST",
@@ -378,7 +393,8 @@ async function askClaude(mode) {
     body: JSON.stringify({
       problemId: problem().id,
       mode,
-      image: exported.dataUrl,
+      image,
+      typedRows,
       rowCount: rows.length,
       hintLevel: state.hintsUsed,
       previousHints: state.hints,
@@ -396,11 +412,12 @@ async function askClaude(mode) {
 
 async function checkWork() {
   if (state.busy) return;
-  if (!board.hasInk) {
-    showIntro("Write your working on the board first — start with the equation and read off a, b and c. Then press Check my work.");
+  typeEditor.commit();
+  if (!board.hasWork) {
+    showIntro("Write or type your working on the board first — start with the equation and read off a, b and c. Then press Check my work.");
     return;
   }
-  if (!state.ai) return showTypedAnswer();
+  if (!state.ai) return checkTypedAnswersLocally() || showTypedAnswer();
   setBusy(true);
   thinking("Reading your working…");
   try {
@@ -425,7 +442,8 @@ async function requestHint() {
   if (state.busy || state.hintsUsed >= 3) return;
   state.hintsUsed += 1;
   const level = state.hintsUsed;
-  if (state.ai && board.hasInk) {
+  typeEditor.commit();
+  if (state.ai && board.hasWork) {
     setBusy(true);
     thinking("Looking at where you are…");
     try {
@@ -574,6 +592,48 @@ function renderSolvedDock() {
     ),
     h("span", { class: "progress-label" }, `${solvedCount()} of ${lesson().practice.length} done`),
   ]);
+}
+
+// Without AI: if the student typed answers like "x = 4 or x = -3", check them straight away.
+// Returns false when there are no typed answers to check.
+function checkTypedAnswersLocally() {
+  const rows = board.rows();
+  const typedRows = board.typedRows(rows);
+  for (let i = typedRows.length - 1; i >= 0; i--) {
+    const values = answersFromText(mathToText(typedRows[i].latex));
+    if (!values.length) continue;
+    const result = lesson().checkAnswer(problem(), values.map(String));
+    const row = typedRows[i].row;
+    if (result.correct) {
+      drawAnnotations({ annotations: [{ row, mark: "tick", note: "", tone: "good" }] }, rows);
+      showSolved("I checked the answers you typed.");
+      return true;
+    }
+    drawAnnotations({ annotations: [{ row, mark: "cross", note: "", tone: "fix" }] }, rows);
+    const note =
+      result.reason === "missing"
+        ? "You've typed one answer — quadratics usually have two. Look for the other one."
+        : lesson().answerDp
+          ? `Not quite. Check your signs and that you divided the whole top line by 2a, then round to ${lesson().answerDp} decimal places.`
+          : "Not quite. Substitute your answers back into the equation to check them.";
+    setTutor({
+      tone: "fix",
+      status: "Checked your typed answers",
+      speech: note,
+      body: [
+        h("h2", {}, "Not quite yet"),
+        h("p", {}, note),
+        h(
+          "div",
+          { class: "row-buttons" },
+          button("Keep going", () => showIntro(), { kind: "primary" }),
+          state.hintsUsed < 3 && button("Hint", requestHint),
+        ),
+      ],
+    });
+    return true;
+  }
+  return false;
 }
 
 function showError(error) {
@@ -790,12 +850,19 @@ function selectColor(color) {
 function updateToolButtons() {
   $("undoBtn").disabled = board.undoStack.length === 0;
   $("redoBtn").disabled = board.redoStack.length === 0;
-  $("clearBtn").disabled = !board.hasInk;
+  $("clearBtn").disabled = !board.hasWork;
 }
 
 function setTool(tool) {
+  if (tool !== "type") typeEditor.commit();
   board.setTool(tool);
   selectTool(tool);
+}
+
+// Choosing the Type tool opens a box on the next line under the working.
+function startTyping() {
+  setTool("type");
+  if (!typeEditor.open) typeEditor.openAt({ x: LEFT, y: Math.max(130, board.contentBottom() + 24) });
 }
 
 function syncTabs() {
@@ -803,19 +870,21 @@ function syncTabs() {
   $("tabPractice").setAttribute("aria-pressed", String(state.mode === "practice"));
 }
 
-for (const btn of document.querySelectorAll(".tool[data-tool]")) btn.addEventListener("click", () => setTool(btn.dataset.tool));
+for (const btn of document.querySelectorAll(".tool[data-tool]"))
+  btn.addEventListener("click", () => (btn.dataset.tool === "type" ? startTyping() : setTool(btn.dataset.tool)));
 for (const btn of document.querySelectorAll(".swatch")) {
   btn.style.setProperty("--c", btn.dataset.color);
   btn.addEventListener("click", () => {
     board.setColor(btn.dataset.color);
     selectColor(btn.dataset.color);
-    if (board.tool === "eraser" || board.tool === "hand") setTool("pen");
+    if (["eraser", "hand", "type"].includes(board.tool)) setTool("pen");
   });
 }
 $("undoBtn").addEventListener("click", () => board.undo());
 $("redoBtn").addEventListener("click", () => board.redo());
 $("clearBtn").addEventListener("click", () => {
-  if (board.hasInk && window.confirm("Clear everything you've written? (You can undo this.)")) {
+  if (board.hasWork && window.confirm("Clear everything you've written and typed? (You can undo this.)")) {
+    typeEditor.cancel();
     board.clearInk();
     board.clearLayer("annotation");
   }
@@ -853,7 +922,7 @@ $("autoSpeak").addEventListener("change", (e) => {
 });
 
 document.addEventListener("keydown", (e) => {
-  if (e.target.closest("input, textarea, select")) return;
+  if (e.target.closest("input, textarea, select, math-field")) return;
   const key = e.key.toLowerCase();
   if ((e.ctrlKey || e.metaKey) && key === "z") {
     e.preventDefault();
@@ -870,6 +939,10 @@ document.addEventListener("keydown", (e) => {
     if (key === "p") setTool("pen");
     else if (key === "h") setTool("highlighter");
     else if (key === "e") setTool("eraser");
+    else if (key === "t" && mathReady) {
+      e.preventDefault(); // don't type the "t" into the new box
+      startTyping();
+    }
   }
 });
 document.addEventListener("keyup", (e) => {
@@ -949,7 +1022,7 @@ function resume() {
   state.index = saved.indexByLesson[saved.lessonId] ?? 0;
   if (saved.mode === "practice")
     return enterPractice(state.index, saved.question && { ...saved.question, board: saved.board });
-  return enterLearn({ demoStep: saved.demoStep, strokes: saved.board.strokes });
+  return enterLearn({ demoStep: saved.demoStep, strokes: saved.board.strokes, typed: saved.board.typed });
 }
 
 $("resetProgress").addEventListener("click", () => {
@@ -965,4 +1038,6 @@ $("resetProgress").addEventListener("click", () => {
 updateToolButtons();
 setTool("pen");
 loadStatus();
+mathReady = Boolean(await loadMathLive());
+if (!mathReady) document.querySelector('.tool[data-tool="type"]').hidden = true;
 resume();

@@ -7,6 +7,8 @@ const MAX_CHARS = 3_000_000; // stay well inside the ~5 MB localStorage budget
 const MAX_STROKES = 4000;
 const MAX_POINTS = 4000;
 const MAX_ITEMS = 400;
+const MAX_TYPED = 200;
+const MAX_LATEX = 1000;
 
 const isHex = (v) => typeof v === "string" && /^#[0-9a-fA-F]{6}$/.test(v);
 const isNum = (v) => typeof v === "number" && Number.isFinite(v);
@@ -84,6 +86,14 @@ function packItem(item) {
   return data;
 }
 
+// ---------- typed maths lines ----------
+
+function cleanTyped(raw) {
+  if (!raw || !isInt(raw.id, 1) || typeof raw.latex !== "string" || !raw.latex || raw.latex.length > MAX_LATEX) return null;
+  if (!isNum(raw.x) || !isNum(raw.y)) return null;
+  return { id: raw.id, latex: raw.latex, x: round(raw.x, 10), y: round(raw.y, 10) };
+}
+
 // ---------- whole snapshot ----------
 
 // snapshot: { lessonId, mode, demoStep, indexByLesson, solved, question, board: { strokes, items } }
@@ -91,10 +101,11 @@ export function serializeProgress(snapshot) {
   const board = {
     strokes: (snapshot.board?.strokes ?? []).slice(0, MAX_STROKES).map(packStroke),
     items: (snapshot.board?.items ?? []).slice(0, MAX_ITEMS).map(packItem),
+    typed: (snapshot.board?.typed ?? []).slice(0, MAX_TYPED).map(cleanTyped).filter(Boolean),
   };
   const data = { v: 1, ...snapshot, board };
   let text = JSON.stringify(data);
-  if (text.length > MAX_CHARS) text = JSON.stringify({ ...data, board: { strokes: [], items: [] } }); // too big: keep progress, drop the drawing
+  if (text.length > MAX_CHARS) text = JSON.stringify({ ...data, board: { strokes: [], items: [], typed: [] } }); // too big: keep progress, drop the drawing
   return text;
 }
 
@@ -138,6 +149,7 @@ export function parseProgress(text, lessons) {
 
   const strokes = (Array.isArray(raw.board?.strokes) ? raw.board.strokes : []).slice(0, MAX_STROKES).map(unpackStroke).filter(Boolean);
   const items = (Array.isArray(raw.board?.items) ? raw.board.items : []).slice(0, MAX_ITEMS).map(cleanItem).filter(Boolean);
+  const typed = (Array.isArray(raw.board?.typed) ? raw.board.typed : []).slice(0, MAX_TYPED).map(cleanTyped).filter(Boolean);
   return {
     lessonId: lesson.id,
     mode,
@@ -146,7 +158,7 @@ export function parseProgress(text, lessons) {
     solved,
     question,
     // Board items are only reused when we're resuming the same practice question.
-    board: { strokes, items: question ? items : [] },
+    board: { strokes, typed, items: question ? items : [] },
   };
 }
 

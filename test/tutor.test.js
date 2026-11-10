@@ -76,6 +76,21 @@ test("formula questions tell Claude the method, the 2 d.p. answers and what to a
   assert.match(text, /exact form/);
 });
 
+test("typed lines are sent as exact text, and all-typed boards need no image", async () => {
+  const client = fakeClient({ stop_reason: "end_turn", content: [{ type: "text", text: JSON.stringify(good) }] });
+  const tutor = createTutor({ client });
+  await tutor.feedback({ problem, image: null, rowCount: 2, typedRows: [{ row: 1, latex: "x^2-x-12=0" }, { row: 2, latex: "(x-3)(x+4)=0" }] });
+  const content = client.calls[0].messages[0].content;
+  assert.equal(content.length, 1);
+  assert.equal(content[0].type, "text");
+  assert.match(content[0].text, /all typed — there is no image/);
+  assert.match(content[0].text, /R2 \(typed\): \(x-3\)\(x\+4\)=0/);
+
+  const mixed = buildRequestText({ problem, mode: "check", rowCount: 3, typedRows: [{ row: 3, latex: "x=4" }], hasImage: true });
+  assert.match(mixed, /The image shows 3 labelled rows/);
+  assert.match(mixed, /dashed boxes/);
+});
+
 test("sanitising drops out-of-range rows, duplicates and unknown enums", () => {
   const result = sanitizeFeedback(
     {

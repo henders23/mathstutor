@@ -63,7 +63,7 @@ export const FEEDBACK_SCHEMA = {
 
 export const SYSTEM_PROMPT = `You are a patient, encouraging maths tutor working at a whiteboard with a secondary-school student (roughly age 13–16, UK). The student is learning to solve quadratic equations and is writing their working by hand. Each request says which method today's lesson teaches.
 
-You will see an image of the student's handwriting. The app has labelled each line of working R1, R2, … in grey in the left margin; the student did not write those labels. Use the row numbers to refer to lines.
+You will usually see an image of the student's handwriting. The app has labelled each line of working R1, R2, … in grey in the left margin; the student did not write those labels. Students can also type lines with a maths keyboard; those come to you as exact text. Use the row numbers to refer to lines.
 
 How to respond:
 - Read the working carefully and transcribe each row. If a character is ambiguous, pick the most likely reading given the maths, and be cautious before calling it a mistake. If a row is unreadable, say so kindly instead of guessing.
@@ -80,7 +80,7 @@ const HINT_GUIDE = {
   3: "Level 3: show them the next step explicitly (you may now reveal the key intermediate value), then let them finish.",
 };
 
-export function buildRequestText({ problem, mode, hintLevel, rowCount, previousHints = [] }) {
+export function buildRequestText({ problem, mode, hintLevel, rowCount, typedRows = [], hasImage = true, previousHints = [] }) {
   const lesson = findLesson(problem.lessonId);
   const steps = lesson.solutionSteps(problem);
   const lines = [
@@ -92,9 +92,18 @@ export function buildRequestText({ problem, mode, hintLevel, rowCount, previousH
     `Lesson notes: ${lesson.gradingNotes}`,
     "",
     rowCount > 0
-      ? `The image shows ${rowCount} labelled row${rowCount === 1 ? "" : "s"} of the student's working (R1–R${rowCount}).`
+      ? hasImage
+        ? `The image shows ${rowCount} labelled row${rowCount === 1 ? "" : "s"} of the student's working (R1–R${rowCount}).`
+        : `The student's working has ${rowCount} row${rowCount === 1 ? "" : "s"} (R1–R${rowCount}), all typed — there is no image.`
       : "The student hasn't written anything yet.",
   ];
+  if (typedRows.length) {
+    lines.push(
+      "",
+      "Some lines were typed with a maths keyboard rather than handwritten. Their exact content, as LaTeX, is below — trust it over the image (where typed lines appear in dashed boxes as plain text). Students may type informally; judge the maths, not the LaTeX. Transcribe typed rows as plain-text maths.",
+      ...typedRows.map(({ row, latex }) => `  R${row} (typed): ${latex}`),
+    );
+  }
   if (mode === "hint") {
     lines.push(
       "",
@@ -168,8 +177,8 @@ function describeApiError(error) {
 export function createTutor({ client, model = DEFAULT_MODEL, effort = DEFAULT_EFFORT }) {
   return {
     model,
-    async feedback({ problem, image, rowCount, mode = "check", hintLevel = 1, previousHints = [] }) {
-      const base64 = image.replace(/^data:image\/png;base64,/, "");
+    async feedback({ problem, image, rowCount, typedRows = [], mode = "check", hintLevel = 1, previousHints = [] }) {
+      const base64 = image ? image.replace(/^data:image\/png;base64,/, "") : null;
       let response;
       try {
         response = await client.beta.messages.create({
@@ -184,8 +193,11 @@ export function createTutor({ client, model = DEFAULT_MODEL, effort = DEFAULT_EF
             {
               role: "user",
               content: [
-                { type: "image", source: { type: "base64", media_type: "image/png", data: base64 } },
-                { type: "text", text: buildRequestText({ problem, mode, hintLevel, rowCount, previousHints }) },
+                ...(base64 ? [{ type: "image", source: { type: "base64", media_type: "image/png", data: base64 } }] : []),
+                {
+                  type: "text",
+                  text: buildRequestText({ problem, mode, hintLevel, rowCount, typedRows, hasImage: Boolean(base64), previousHints }),
+                },
               ],
             },
           ],

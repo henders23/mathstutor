@@ -29,6 +29,7 @@ const practiceSnapshot = {
       { id: 4, progress: 1, layer: "tutor", kind: "fraction", x: 140, y: 200, size: 28, color: "#1F5FD1", prefix: "x =", num: [{ text: "-b ± " }, { text: "b² - 4ac", root: true }], den: [{ text: "2a" }] },
       { id: 5, progress: 1, layer: "annotation", kind: "mark", type: "tick", x: 300, y: 220, size: 28, color: "#237032" },
     ],
+    typed: [{ id: 12, latex: "x=\\frac{-4\\pm\\sqrt{12}}{2}", x: 140.04, y: 300 }, { id: 13, latex: "", x: 1, y: 1 }, { id: 14, latex: "x=1", x: "a", y: 1 }],
   },
 };
 
@@ -48,6 +49,7 @@ test("a practice session round-trips through storage", () => {
   assert.deepEqual(saved.board.items.map((i) => [i.kind, i.layer]), [["line", "tutor"], ["fraction", "tutor"], ["mark", "annotation"]]);
   assert.equal(saved.board.items[0].id, undefined); // runtime fields are not stored
   assert.equal(saved.board.items[1].num[1].root, true);
+  assert.deepEqual(saved.board.typed, [{ id: 12, latex: "x=\\frac{-4\\pm\\sqrt{12}}{2}", x: 140, y: 300 }]); // invalid ones dropped
   clearProgress(store);
   assert.equal(loadProgress(LESSONS, store), null);
 });
@@ -59,6 +61,7 @@ test("learn mode keeps the demo step and ink but no tutor items", () => {
   assert.equal(saved.demoStep, 3);
   assert.equal(saved.question, null);
   assert.equal(saved.board.strokes.length, 2);
+  assert.equal(saved.board.typed.length, 1); // typed lines are kept in learn mode too
   assert.deepEqual(saved.board.items, []);
 });
 

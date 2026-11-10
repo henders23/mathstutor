@@ -59,6 +59,13 @@ test("static files are served and path traversal is refused", async () => {
     assert.match(js.headers.get("content-type"), /javascript/);
     assert.notEqual((await fetch(`${base}/..%2Fserver.js`)).status, 200);
     assert.notEqual((await fetch(`${base}/..%2F.env`)).status, 200);
+    // MathLive is served from node_modules, but only its script, styles and fonts.
+    const ml = await fetch(`${base}/vendor/mathlive/mathlive.min.mjs`);
+    assert.equal(ml.status, 200);
+    assert.match(ml.headers.get("content-type"), /javascript/);
+    assert.equal((await fetch(`${base}/vendor/mathlive/fonts/KaTeX_Main-Regular.woff2`)).headers.get("content-type"), "font/woff2");
+    for (const blocked of ["/vendor/mathlive/package.json", "/vendor/mathlive/../../package.json", "/vendor/mathlive/fonts/..%2F..%2Fserver.js", "/vendor/other/x.js"])
+      assert.notEqual((await fetch(`${base}${blocked}`)).status, 200, blocked);
   });
 });
 
@@ -66,6 +73,9 @@ test("request validation", () => {
   const ok = { problemId: "p1", mode: "check", image: PNG, rowCount: 2 };
   assert.equal(parseFeedbackRequest(JSON.stringify(ok)).problem.id, "p1");
   assert.equal(parseFeedbackRequest(JSON.stringify({ ...ok, problemId: "f3" })).problem.lessonId, "formula");
+  const typedOnly = parseFeedbackRequest(JSON.stringify({ ...ok, image: null, typedRows: [{ row: 2, latex: "x=4", extra: 1 }] }));
+  assert.equal(typedOnly.image, null);
+  assert.deepEqual(typedOnly.typedRows, [{ row: 2, latex: "x=4" }]);
   const bad = [
     "not json",
     { ...ok, problemId: "demo-factorising" },
@@ -76,6 +86,11 @@ test("request validation", () => {
     { ...ok, mode: "solve" },
     { ...ok, rowCount: 99 },
     { ...ok, rowCount: "2" },
+    { ...ok, image: null },
+    { ...ok, typedRows: [{ row: 3, latex: "x" }] },
+    { ...ok, typedRows: [{ row: 1, latex: 5 }] },
+    { ...ok, typedRows: "x=4" },
+    { ...ok, typedRows: [{ row: 1, latex: "x".repeat(2001) }] },
   ];
   for (const body of bad) assert.throws(() => parseFeedbackRequest(typeof body === "string" ? body : JSON.stringify(body)), TutorError);
 });

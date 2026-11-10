@@ -13,6 +13,7 @@
     "node": ">=22.9"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "1.6.0"
+    "@anthropic-ai/sdk": "1.6.0",
+    "mathlive": "0.111.1"
   }
 }

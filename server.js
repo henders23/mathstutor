@@ -11,6 +11,9 @@ import { findProblem } from "./public/js/lessons/index.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.join(here, "public");
+// MathLive (the maths input boxes) is served from node_modules so it stays same-origin. Only these files are exposed.
+const MATHLIVE_DIR = path.join(here, "node_modules", "mathlive");
+const VENDOR_FILES = /^\/vendor\/mathlive\/(mathlive\.min\.mjs|mathlive-static\.css|mathlive-fonts\.css|fonts\/[A-Za-z0-9_-]+\.woff2)$/;
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const MAX_IMAGE_CHARS = 7 * 1024 * 1024;
 const RATE_LIMIT = { windowMs: 60_000, max: 20 };
@@ -23,11 +26,13 @@ const TYPES = {
   ".png": "image/png",
   ".ico": "image/x-icon",
   ".json": "application/json; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".woff2": "font/woff2",
 };
 
 const SECURITY_HEADERS = {
   "Content-Security-Policy":
-    "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'",
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",
 };
@@ -69,19 +74,37 @@ export function parseFeedbackRequest(body) {
   }
   const problem = findProblem(data?.problemId);
   if (!problem || problem.demo) throw new TutorError("bad_request", "Unknown practice question.", 400);
-  if (typeof data.image !== "string" || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(data.image))
+  // The image is optional when every line was typed.
+  const image = data.image ?? null;
+  if (image !== null && (typeof image !== "string" || !/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(image)))
     throw new TutorError("bad_request", "Expected a PNG image of the board.", 400);
-  if (data.image.length > MAX_IMAGE_CHARS) throw new TutorError("too_large", "That board image is too large.", 413);
+  if (image && image.length > MAX_IMAGE_CHARS) throw new TutorError("too_large", "That board image is too large.", 413);
   const mode = data.mode === "hint" ? "hint" : data.mode === "check" ? "check" : null;
   if (!mode) throw new TutorError("bad_request", "mode must be 'check' or 'hint'.", 400);
   const rowCount = Number.isInteger(data.rowCount) && data.rowCount >= 0 && data.rowCount <= 40 ? data.rowCount : null;
   if (rowCount === null) throw new TutorError("bad_request", "rowCount must be an integer from 0 to 40.", 400);
+  const typedRows = data.typedRows ?? [];
+  if (
+    !Array.isArray(typedRows) ||
+    typedRows.length > rowCount ||
+    !typedRows.every((t) => t && Number.isInteger(t.row) && t.row >= 1 && t.row <= rowCount && typeof t.latex === "string" && t.latex.length <= 2000)
+  )
+    throw new TutorError("bad_request", "typedRows must list typed lines by row number.", 400);
+  if (!image && typedRows.length === 0) throw new TutorError("bad_request", "Send an image of the board or some typed lines.", 400);
   const hintLevel = Number.isInteger(data.hintLevel) ? Math.min(3, Math.max(1, data.hintLevel)) : 1;
   const previousHints = (Array.isArray(data.previousHints) ? data.previousHints : [])
     .filter((h) => typeof h === "string")
     .slice(0, 3)
     .map((h) => h.slice(0, 400));
-  return { problem, image: data.image, rowCount, mode, hintLevel, previousHints };
+  return {
+    problem,
+    image,
+    rowCount,
+    typedRows: typedRows.map(({ row, latex }) => ({ row, latex })),
+    mode,
+    hintLevel,
+    previousHints,
+  };
 }
 
 function rateLimiter() {
@@ -99,8 +122,10 @@ async function serveStatic(req, res) {
   const url = new URL(req.url, "http://localhost");
   let pathname = decodeURIComponent(url.pathname);
   if (pathname === "/") pathname = "/index.html";
-  const file = path.normalize(path.join(PUBLIC_DIR, pathname));
-  if (!file.startsWith(PUBLIC_DIR + path.sep)) return send(res, 403, "Forbidden");
+  const vendor = pathname.match(VENDOR_FILES);
+  const root = vendor ? MATHLIVE_DIR : PUBLIC_DIR;
+  const file = path.normalize(vendor ? path.join(MATHLIVE_DIR, vendor[1]) : path.join(PUBLIC_DIR, pathname));
+  if (!file.startsWith(root + path.sep)) return send(res, 403, "Forbidden");
   try {
     const content = await fs.readFile(file);
     send(res, 200, content, {

@@ -39,6 +39,23 @@ Without an API key everything except handwriting checking still works. In that c
 | `PORT` / `HOST` | `3000` / `127.0.0.1` | Where the server listens. |
 | `TUTOR_AI` | – | `off` turns handwriting checking off even when a key is set. |
 
+## Typing maths
+
+Students can type as well as write, and mix the two freely on the same board.
+
+- **Starting a line:** pick the **Type** tool (keyboard icon, or press **T**). A maths box opens on the next line under the working. Tap anywhere on the board to start a box there instead.
+- **Entering maths:** type normally. Shortcuts turn into proper notation as you go: `x^2` → x², `/` → a stacked fraction, `sqrt` → √, `+-` → ±, `or` → "or".
+- **The keypad:** while a box is active, a keypad appears with x², powers, √, fractions, ±, ×, ÷, brackets and "or". It hides again when you're done.
+- **Finishing:** **Enter** (or **New line**) commits the line and opens the next one underneath. **Done** or tapping away commits it. **Esc** cancels.
+- **Editing:** with the Type tool, tap a typed line to edit it, or drag it to move it. The eraser removes typed lines, and undo/redo and progress saving cover them.
+
+**How checking uses typed lines:**
+
+- **Claude:** typed lines are sent as exact LaTeX, labelled with their row numbers, so they don't depend on handwriting recognition. If the board is all typed, no image is sent at all. In a mixed board, the image shows typed lines as dashed boxes with a plain-text version.
+- **Without an API key:** if the student types answers such as `x = 4 or x = -3`, they're checked instantly in the browser.
+
+The maths boxes use [MathLive](https://mathlive.io) (MIT licence). It's served from this server's `node_modules`, so no third-party script is loaded. Rendering typed maths needs inline styles, so the Content-Security-Policy allows `'unsafe-inline'` for styles only; scripts are still restricted to the app itself. Typed LaTeX is checked against a list of allowed maths commands before rendering, and anything else is shown as plain text.
+
 ## Saving progress
 
 Progress is saved automatically in the browser (localStorage), so a reload or closing the tab doesn't lose anything. It saves:
@@ -79,6 +96,8 @@ public/js/app.js     Lesson flow: demo, practice, hints, feedback on the board
 public/js/board.js   The whiteboard: strokes, pan/zoom, animated tutor writing, image export
 public/js/rows.js    Groups strokes into lines of working
 public/js/progress.js  Saves and validates progress in localStorage
+public/js/typing.js  Maths input boxes (MathLive) and the symbol keypad
+public/js/mathtext.js  Safe-LaTeX check and reading typed answers
 public/js/lessons/   Lesson content (shared by browser, server and tests)
   common.js          Maths and formatting helpers
   factorising.js     Lesson 1
